@@ -18,6 +18,14 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.33
+
+- Your Orb now always shows the real sky. It could be told to invent aircraft by a theme,
+  which meant a theme you installed from somebody else could fill your scope with traffic
+  that was never there
+- Orb Studio keeps its Test traffic switch for designing with, and it stays in the browser
+- Found by Fly4Funn, whose Orb was showing eight aircraft he never asked for
+
 ## 2.16.32
 
 - Headlines set at an angle now actually appear. They were being drawn nowhere at all, while

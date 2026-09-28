@@ -137,7 +137,6 @@ void setFeedStatus(bool wifiUp, uint32_t staleSec, bool locationKnown);
 // left it saying "loading" indefinitely, which is the device telling the person in front of
 // it something that is not true. Pass nullptr to put the original wording back.
 void setFeedNote(const char *note);
-void setSimulatedBadge(bool on);                 // "TEST DATA" mark, forced on whenever the active theme fakes its traffic
 // Diagnostic only: hide one layer at runtime so its per-frame cost can be priced
 // by difference, instead of reflashing once per hypothesis. kind: 0=sweep,
 // 1=aircraft, 2=text, 3=static1, 4=static2, 5=wash, 6=plate. Not persisted.

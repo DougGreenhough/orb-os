@@ -764,7 +764,6 @@ void load() {
             // is the one operational value with no device-side control to undo it with.
             if (doc["deadZonePx"].is<int>())
                 s_radar.deadZonePx = clampi(doc["deadZonePx"].as<int>(), 0, (int)RADAR_R_OUTER_PX);
-            if (doc["simulate"].is<bool>())      s_radar.simulate       = doc["simulate"].as<bool>();
             if (doc["sweepPivotX"].is<int>())    s_radar.sweepPivotX    = doc["sweepPivotX"].as<int>();
             if (doc["sweepPivotY"].is<int>())    s_radar.sweepPivotY    = doc["sweepPivotY"].as<int>();
             if (doc["sweepCenterX"].is<int>())   s_radar.sweepCenterX   = doc["sweepCenterX"].as<int>();

@@ -365,65 +365,27 @@ static void adsb_task(void*) {
                 static int failCount = 0;
                 // poll() tries the fallback provider after a primary failure; keep the HUD
                 // healthy through isolated misses and warn only after a sustained outage.
-                // Synthesised traffic, when the active theme asks for it. Straight courses at
-                // fixed speeds, seeded once so the same aircraft persist and actually travel
-                // rather than teleporting each poll — which is what makes trails, sticky
-                // tracking and zone masking all observable without waiting on the sky.
-                // Positions advance by real elapsed time, so it runs at the same pace
-                // whatever the poll interval is.
-                const bool simulated = theme_style::radar().simulate;
-                if (simulated) {
-                    static bool     simInit = false;
-                    static uint32_t simT0 = 0;
-                    struct SimAc { double lat0, lon0; float brgDeg, gsKt, altFt; const char *call; const char *type; };
-                    static SimAc sim[8];
-                    if (!simInit) {
-                        simInit = true;
-                        simT0 = millis();
-                        // Spread around the home point at varied radii and headings, so some
-                        // cross the middle, some skirt the rim, and some pass through
-                        // whatever keep-out areas a design has drawn.
-                        for (int i = 0; i < 8; ++i) {
-                            const float a = (float)i * 45.0f;
-                            const float rKm = 8.0f + (float)(i % 4) * 9.0f;
-                            sim[i].lat0   = g_settings.homeLat + (double)(rKm / 111.0f) * cos(a * (float)M_PI / 180.0f);
-                            sim[i].lon0   = g_settings.homeLon + (double)(rKm / 111.0f) * sin(a * (float)M_PI / 180.0f)
-                                            / cos(g_settings.homeLat * (double)M_PI / 180.0);
-                            sim[i].brgDeg = fmodf(a + 115.0f, 360.0f);   // not radial: they cross the scope
-                            sim[i].gsKt   = 180.0f + (float)(i % 5) * 55.0f;
-                            sim[i].altFt  = 3500.0f + (float)i * 2600.0f;
-                            sim[i].call   = "SIM";
-                            sim[i].type   = "SIM";
-                        }
-                    }
-                    const float hrs = (float)(millis() - simT0) / 3600000.0f;
-                    fresh.clear();
-                    for (int i = 0; i < 8; ++i) {
-                        const float nm  = sim[i].gsKt * hrs;
-                        const float km  = nm * 1.852f;
-                        const float brg = sim[i].brgDeg * (float)M_PI / 180.0f;
-                        Aircraft a;
-                        char hexBuf[8]; snprintf(hexBuf, sizeof(hexBuf), "sim%03d", i);
-                        a.hex     = hexBuf;
-                        char callBuf[10]; snprintf(callBuf, sizeof(callBuf), "SIM%03d", i);
-                        a.flight  = callBuf;
-                        a.type    = "SIM";
-                        a.lat     = sim[i].lat0 + (double)(km / 111.0f) * cos(brg);
-                        a.lon     = sim[i].lon0 + (double)(km / 111.0f) * sin(brg)
-                                    / cos(g_settings.homeLat * (double)M_PI / 180.0);
-                        a.altBaro = sim[i].altFt;
-                        a.onGround = false;
-                        a.track   = sim[i].brgDeg;
-                        a.gs      = sim[i].gsKt;
-                        a.baroRate = 0.0f;
-                        a.squawk  = 1200;
-                        a.seenPos = 0;
-                        a.lastUpdateMs = millis();
-                        fresh.push_back(a);
-                    }
-                }
-                if (simulated || g_adsb.poll(fresh)) {
-                    if (!simulated) Serial.printf("[adsb] fetched %u aircraft\n", (unsigned)fresh.size());
+                // NO SYNTHESISED TRAFFIC. A real Orb shows the real sky, always.
+                //
+                // This used to fabricate eight aircraft whenever the active theme asked for
+                // it, and the flag travelled INSIDE THE THEME FILE. That is the part that
+                // made it indefensible rather than merely untidy: a theme is shared, so one
+                // designer's debugging state became a stranger's device. Fly4Funn reported
+                // his Orb full of SIM00x aircraft on 2026-09-27; he had never asked for
+                // them, he had installed somebody else's theme. Panerai Punk was carrying
+                // the flag in the library at the time.
+                //
+                // Zion, 2026-09-28: "on the real orb, it should always be real aircraft
+                // traffic. There is never, ever a need for fake simulated air traffic."
+                //
+                // Orb Studio keeps the switch, because the reason for it is real: designing
+                // a scope somewhere with no traffic overhead means nothing to design
+                // against. But that is a question about a PREVIEW IN A BROWSER, and it is
+                // answered there. Nothing about it reaches the card, and this device can no
+                // longer invent an aircraft under any circumstances. A theme.json that still
+                // carries the old flag is simply ignored, which is why the parse went too.
+                if (g_adsb.poll(fresh)) {
+                    Serial.printf("[adsb] fetched %u aircraft\n", (unsigned)fresh.size());
                     failCount = 0;
                     adsbBackoffMs = 0;                        // recovered: back to real-time polling
                     feedEverOk = true;                        // a restart now has a known-good state to return to
@@ -662,13 +624,11 @@ static void applyThemeSettings() {
     // no device-side control, so there is nowhere to correct it from if it lands wrong.
     if (rs.deadZonePx >= 0)    g_deadZonePx = (rs.deadZonePx > (int)RADAR_R_OUTER_PX)
                                               ? (int)RADAR_R_OUTER_PX : rs.deadZonePx;
-    // Same flag main.cpp's poll loop reads to decide whether to fabricate traffic (see
-    // "simulated" in the ADS-B poll branch below) — the badge tracks it here so the two
-    // can never drift apart, one deciding what is drawn and the other saying so.
-    radar::setSimulatedBadge(rs.simulate);
-    Serial.printf("[theme] applied: rangeKm=%.0f maxAircraft=%d minAltFt=%d hideGround=%d deadZonePx=%d simulate=%d\n",
-                  (double)g_settings.rangeKm, g_maxAc, g_minAltFt, (int)g_hideGround,
-                  g_deadZonePx, (int)rs.simulate);
+    // The simulated badge went with the thing it warned about. It existed because the
+    // device could be made to show invented aircraft and somebody had to be told; it
+    // cannot any more, so there is nothing to say.
+    Serial.printf("[theme] applied: rangeKm=%.0f maxAircraft=%d minAltFt=%d hideGround=%d deadZonePx=%d\n",
+                  (double)g_settings.rangeKm, g_maxAc, g_minAltFt, (int)g_hideGround, g_deadZonePx);
 }
 
 static void loadSettings() {

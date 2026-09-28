@@ -1011,7 +1011,11 @@ struct Radar {
     // Synthesised traffic instead of the live feed. For judging a design without waiting
     // on whatever happens to be overhead, and for watching masking behave against motion
     // that is predictable rather than whatever the sky is doing.
-    bool     simulate        = false;
+    // GONE from the device, 2026-09-28. Studio keeps the switch as a preview convenience,
+    // for designing a scope where nothing happens to be flying overhead; nothing about it
+    // is emitted into radar_style.json and nothing here reads it. A theme file that still
+    // carries the key is ignored, which is deliberate: the old ones are already out there.
+    // See the note in main.cpp's ADS-B poll for why a theme was the wrong place for it.
 
     // Rotation pivots for image-type sweeps and blips, in their own image's pixels.
     //

@@ -259,7 +259,6 @@ static void radar_exit_select();             // -> default view (deselect + rele
 void noteSelectionDetailArrived();
 static float       s_lastRangeKm = 0.0f;     // current scope range, for the range banner (radar_range_fmt)
 static lv_obj_t   *s_feedWarn   = nullptr;   // "the feed is down, not your Orb" banner
-static lv_obj_t   *s_simBadge   = nullptr;   // "this traffic is made up" mark, see setSimulatedBadge()
 static lv_obj_t   *s_loadTicker = nullptr;   // live elapsed-seconds line under the loading message
 static lv_obj_t   *s_textCanvas = nullptr;   // callsign/stats/route banners (curved+glow capable), a Launch Kit push
 // The selection card: a plate under those banners, parked on the far side of the scope
@@ -1667,7 +1666,6 @@ static void applyRadarLayerOrder() {
         if (byKind[k]) lv_obj_move_foreground(byKind[k]);
     }
     if (s_overlayImg) lv_obj_move_foreground(s_overlayImg);
-    if (s_simBadge)   lv_obj_move_foreground(s_simBadge);   // outranks even the glass
 
     // What the stack ACTUALLY is, straight from LVGL, rather than what the order array was
     // supposed to achieve. lv_obj_get_index is the real z-position among siblings, so this
@@ -1790,15 +1788,6 @@ void setFeedNote(const char *note) {
     lv_label_set_text(s_loading, note ? note : "Loading aircraft\nand location data");
 }
 
-// Forced on for as long as the active theme's radar.simulate is true, regardless of what
-// else the theme asks for. There is no theme-side field that can hide this: the whole
-// defect it fixes is a Studio control whose own hint framed it as a preview convenience
-// when it is not, so nothing short of "the device itself refuses to stay quiet about it"
-// closes the gap. Called from main.cpp wherever the theme's settings are applied, so it
-// tracks the SAME flag that decides whether main.cpp fabricates aircraft, not a copy of it.
-void setSimulatedBadge(bool on) {
-    if (s_simBadge) show(s_simBadge, on);
-}
 
 void setRangeLabelVisible(bool v) { s_rangeLblVisible = v; if (s_rangeLbl) show(s_rangeLbl, v && !orb() && !customStyled()); }
 
@@ -2087,19 +2076,6 @@ void init(void *lv_parent) {
     lv_obj_clear_flag(s_overlayImg, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
     lv_obj_center(s_overlayImg);
     lv_obj_add_flag(s_overlayImg, LV_OBJ_FLAG_HIDDEN);
-
-    // "This traffic is made up." Above the glass overlay, above everything: the one label
-    // on this screen no theme JSON can hide, resize, recolor or move, because the whole
-    // point is that it survives an author who forgot they turned Test traffic on, and
-    // an owner who never knew. See setSimulatedBadge(), driven by theme_style::radar().simulate.
-    s_simBadge = make_label(parent, "TEST DATA", &lv_font_montserrat_14,
-                            lv_color_white(), LV_ALIGN_TOP_LEFT, 10, 10);
-    lv_obj_set_style_bg_color(s_simBadge, lv_color_hex(0xC62E2E), 0);
-    lv_obj_set_style_bg_opa(s_simBadge, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(s_simBadge, 4, 0);
-    lv_obj_set_style_pad_hor(s_simBadge, 7, 0);
-    lv_obj_set_style_pad_ver(s_simBadge, 3, 0);
-    lv_obj_add_flag(s_simBadge, LV_OBJ_FLAG_HIDDEN);
 
     s_sweepDeg = 0.0f;
     s_prevSweepDeg = 0.0f;
