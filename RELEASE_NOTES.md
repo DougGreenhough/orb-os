@@ -18,6 +18,14 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.32
+
+- Headlines set at an angle now actually appear. They were being drawn nowhere at all, while
+  still reacting to a tap, which is why a story would open if you guessed where one was
+- The app switcher shows the names either side again, instead of only the one you are on.
+  They were appearing only if you happened to give the centre name a glow
+- Both found by Drewzy while building a full theme
+
 ## 2.16.31
 
 - Settings, Location now shows the name of where your Orb is set, above the coordinates,

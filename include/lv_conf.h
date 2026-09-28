@@ -18,7 +18,23 @@
 /* 0: native RGB565 order — paired with gfx->draw16bitRGBBitmap() in the flush_cb.
    If colors look byte-swapped on hardware, set this to 1 and use draw16bitBeRGBBitmap(). */
 #define LV_COLOR_16_SWAP 0
-#define LV_COLOR_SCREEN_TRANSP 0
+// ON since 2026-09-27, and it is not optional for a feature this firmware already ships.
+//
+// LVGL's own template says it plainly: "It's required if opa, and transform_* style
+// properties are used." The Headlines screen's Angle control sets transform_angle on the
+// headline block. With this at 0, lv_draw_sw_layer_create refuses the layer outright and
+// the block is NOT DRAWN — while still being touchable, because hit-testing does not care
+// whether anything was painted. Drewzy reported exactly that on 2026-09-27: headlines gone
+// at any angle, but tapping blind still opened a story.
+//
+// Measured rather than argued, on the News screen at 20 degrees: 4,124 lit pixels in the
+// headline band with this on, and 0 with it off.
+//
+// The risk it carries is that the DISPLAY's default background becomes transparent
+// (lv_hal_disp.c). That is harmless here because every screen in this firmware sets its own
+// LV_OPA_COVER background explicitly — clock, intel, settings, weather and spycam all do,
+// and were checked before this was changed.
+#define LV_COLOR_SCREEN_TRANSP 1
 #define LV_COLOR_MIX_ROUND_OFS 0
 #define LV_COLOR_CHROMA_KEY lv_color_hex(0x00ff00)
 

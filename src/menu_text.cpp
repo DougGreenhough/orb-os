@@ -335,10 +335,21 @@ void acquire() {
 #if CUSTOM_HAS_MENU
     lv_obj_t *parent = s_parent;
     if (s_canvas || !parent) return;
-    // Same rule as settings_text: glow is the only reason this canvas exists, so a theme
-    // that asks for none falls back to the plain label and costs nothing.
+    // Glow was the only reason this canvas existed, and that was wrong by one case.
+    //
+    // The fallback when there is no canvas is a SINGLE plain label, which can only ever say
+    // one thing: the app you are on. So a theme that switched the neighbour hints on and put
+    // no glow anywhere got no canvas, fell back to that one label, and its hints simply never
+    // appeared. Drewzy reported it on 2026-09-27 and said he could find no rhyme or reason,
+    // which is fair: the hidden rule was "hints work only if you gave the CENTRE name a
+    // glow", and Studio hard-codes the hints themselves to no glow on purpose.
+    //
+    // So the canvas is also the only thing that can draw a neighbour, and it is kept whenever
+    // one is asked for.
     const theme_style::Menu &mn = theme_style::menu();
-    if (mn.current.glow <= 0 && mn.prev.glow <= 0 && mn.next.glow <= 0) return;
+    const bool wantGlow  = mn.current.glow > 0 || mn.prev.glow > 0 || mn.next.glow > 0;
+    const bool wantHints = mn.prev.show || mn.next.show;
+    if (!wantGlow && !wantHints) return;
     const size_t sz = LV_CANVAS_BUF_SIZE_TRUE_COLOR_ALPHA(SCREEN_W, SCREEN_H);
 #if defined(ESP_PLATFORM)
     s_buf = (lv_color_t *)heap_caps_malloc(sz, MALLOC_CAP_SPIRAM);
