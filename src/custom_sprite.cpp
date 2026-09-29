@@ -163,6 +163,45 @@ const uint16_t *custom_plate() {
     return s_plate;
 }
 
+// THEME_CAPS 55. The extra frames of a moving background.
+//
+// Frame 0 is custom_plate() verbatim, deliberately: a moving theme's first frame and a still
+// theme's only frame are then the same file, the same bytes and the same code path, which is
+// why an Orb that predates this shows a moving theme correctly as a still one.
+//
+// Flash first like every other asset, and NO SD fallback: a frame that was never baked is
+// simply absent. The SD path costs 431 ms and 424 KB of PSRAM per picture, which is fine once
+// for a plate that then stays up, and ruinous for a sequence that wants a new one six times a
+// second. A theme whose frames did not bake holds on frame nought, which is exactly what it
+// looks like today.
+const uint16_t *custom_plate_frame(int index) {
+    if (index <= 0) return custom_plate();
+    if (index > theme_style::BG_ANIM_MAX) return nullptr;
+    static const uint16_t *s_frames[theme_style::BG_ANIM_MAX + 1] = { nullptr };
+    static bool            s_tried[theme_style::BG_ANIM_MAX + 1]  = { false };
+    if (!s_frames[index] && !s_tried[index]) {
+        s_tried[index] = true;
+        char name[32];
+        snprintf(name, sizeof(name), "clock_plate_%02d.png", index);
+        int w = 0, h = 0;
+        if (const uint8_t *p = theme_art::find_active(name, theme_art::FMT_RGB565, w, h)) {
+            s_frames[index] = (const uint16_t *)p;
+        }
+#if !defined(ESP_PLATFORM)
+        // The desktop simulator has no flash partition to bake into, so it reads the frames
+        // the way it reads every other asset, out of sim/sdcard/themes/<slug>/. Deliberately
+        // NOT compiled for the device: there a PNG costs 431 ms and 424 KB of PSRAM, which is
+        // affordable once for a plate that then stays up and ruinous for a sequence wanting a
+        // new one six times a second. On an Orb, frames that did not bake simply do not play.
+        else {
+            uint8_t *o = nullptr;
+            if (decode_sd_first(name, nullptr, 0, false, o, w, h, "plate frame")) s_frames[index] = (uint16_t *)o;
+        }
+#endif
+    }
+    return s_frames[index];
+}
+
 const uint8_t *custom_overlay() {
     if (!s_overlay && !s_overlayTried) {
         s_overlayTried = true;

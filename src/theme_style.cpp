@@ -77,6 +77,7 @@ void seed_defaults() {
     s_clock = Clock{};
     s_clock.bg = (uint32_t)CUSTOM_CLOCK.bg;
     s_clock.plateFollow = 0;      // static plate unless the theme says otherwise
+    s_clock.bgAnim = theme_style::Clock::BgAnim{};   // a still plate unless the theme ships frames
 #if CUSTOM_HAS_TEXT1
     s_clock.text1.show = true;
     s_clock.text1.x = CUSTOM_TEXT1_X;
@@ -520,6 +521,26 @@ void load() {
             // 1 hour, 2 minute, 3 second. The exported plate PNG carries only its static
             // rotation, so this angle is applied live on top (see clock_view draw_custom).
             if (doc["plateFollow"].is<int>()) s_clock.plateFollow = doc["plateFollow"].as<int>();
+            // THEME_CAPS 55, the moving background. Clamped here rather than trusted: the
+            // frame count decides how many files are looked for and how much PSRAM the SD
+            // path would hold, and a bad number in a shared theme file must not be able to
+            // ask for either without limit.
+            if (doc["bgAnim"].is<JsonObjectConst>()) {
+                JsonObjectConst ba = doc["bgAnim"].as<JsonObjectConst>();
+                if (ba["frames"].is<int>()) {
+                    const int n = ba["frames"].as<int>();
+                    s_clock.bgAnim.frames = n < 0 ? 0 : (n > BG_ANIM_MAX ? BG_ANIM_MAX : n);
+                }
+                if (ba["fps"].is<int>()) {
+                    const int v = ba["fps"].as<int>();
+                    s_clock.bgAnim.fps = v < 1 ? 1 : (v > 30 ? 30 : v);
+                }
+                if (ba["loop"].is<bool>()) s_clock.bgAnim.loop = ba["loop"].as<bool>();
+                if (ba["everySec"].is<int>()) {
+                    const int v = ba["everySec"].as<int>();
+                    s_clock.bgAnim.everySec = v < 1 ? 1 : (v > 86400 ? 86400 : v);
+                }
+            }
             merge_text(doc["text1"], s_clock.text1);
             merge_text(doc["text2"], s_clock.text2);
             // "hands": { "hour": {...}, "minute": {...}, "second": {...},

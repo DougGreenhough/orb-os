@@ -1095,13 +1095,82 @@ static void blit_plate_rot_slow(const uint16_t *src, float angleDeg) {
 // Two flags, and both exist for the smooth second hand. `skipSecond` leaves the sweeping
 // hand out, which is what makes a cached face possible: everything that only changes once a
 // minute is composited once and kept. `withOverlay` leaves the glass off, because the
+// ── the moving background, THEME_CAPS 55 ──────────────────────────────────────
+//
+// Zion's design, and it is the reason this is affordable at all. A background that changes
+// every frame invalidates s_under, the cache of everything beneath the second hand, and that
+// cache is the only reason a sweep is possible: rebuilding it costs a full compose, which is
+// 72 ms against the 26 ms a cached frame costs, and the hand falls from about thirteen a
+// second to four and a half. Measured; see the note over sweep_period().
+//
+// So the default is to HOLD on frame nought and play now and then. While it holds, the
+// background is still, the cache is valid, and the hand runs exactly as fast as it does on a
+// theme with no animation at all: the cost is not reduced, it is absent. A play spends that
+// cost for a second or two, which is the moment somebody is looking at the picture rather
+// than the hand. A theme may also ask to loop, and then it pays the whole time, which is its
+// choice to make and is why it is not the default.
+static uint32_t s_bgPlayStart = 0;     // ms, when the current play began; 0 when holding
+static uint32_t s_bgLastPlay  = 0;     // ms, when the last play ended
+static int      s_bgFrame     = 0;     // the frame now on screen, so a change can be noticed
+
+// Is a play running right now? The tick uses this to keep time with the animation rather
+// than with the second hand, which may otherwise be a whole second apart.
+static bool bg_anim_playing() { return s_bgPlayStart != 0; }
+
+// Which frame belongs on the dial at this moment.
+static int bg_anim_frame() {
+    const theme_style::Clock::BgAnim &a = theme_style::clock().bgAnim;
+    if (a.frames <= 0) return 0;
+    const uint32_t now  = lv_tick_get();
+    const uint32_t step = 1000u / (uint32_t)(a.fps < 1 ? 1 : a.fps);
+    const int      last = a.frames;            // frames counts the EXTRA ones, so 0..last
+
+    if (a.loop) {
+        s_bgPlayStart = 0;                     // a loop is never "a play"; it just runs
+        return (int)((now / (step ? step : 1)) % (uint32_t)(last + 1));
+    }
+
+    if (!bg_anim_playing()) {
+        // Hold on frame nought until it is time. s_bgLastPlay starts at 0, which would fire
+        // immediately at boot; the theme is applied before the first tick, so instead the
+        // first interval is measured from whenever this theme became the live one.
+        if (s_bgLastPlay == 0) { s_bgLastPlay = now; return 0; }
+        if (now - s_bgLastPlay < (uint32_t)a.everySec * 1000u) return 0;
+        s_bgPlayStart = now ? now : 1;
+        // Two lines an interval, and an interval is minutes by default. Worth having: "does
+        // the background actually fire?" is otherwise only answerable by watching the glass.
+        Serial.printf("[bg_anim] play starts: %d frames at %d fps\n", a.frames, a.fps);
+    }
+    const uint32_t into = now - s_bgPlayStart;
+    const int      idx  = (int)(into / (step ? step : 1));
+    if (idx > last) {                          // played through: back to nought and hold
+        Serial.printf("[bg_anim] play ends after %lu ms, holding %d s\n",
+                      (unsigned long)into, a.everySec);
+        s_bgPlayStart = 0;
+        s_bgLastPlay  = now;
+        return 0;
+    }
+    return idx;
+}
+
+// Start this theme's clock over. Called when a theme is applied, so the first play is one
+// full interval after the theme arrives rather than at some moment inherited from the last.
+void clock_view_reset_bg_anim() {
+    s_bgPlayStart = 0;
+    s_bgLastPlay  = lv_tick_get();
+    s_bgFrame     = 0;
+}
+
 // overlay has to go back on TOP of the second hand and so cannot be baked into that cache.
 static void compose_custom(const struct tm *ti, bool skipSecond, bool withOverlay) {
     // Decode the plate first: it's the whole visible dial and the largest buffer,
     // so it gets first claim on PSRAM. (Text is now a baked font, not a giant
     // atlas, so the old "overlay first" ordering is no longer needed.) The overlay
     // is decoded next and blitted at the end (over the hands).
-    const uint16_t *plate = custom_plate();
+    // The frame the player chose, falling back to the plate itself when a theme ships no
+    // animation or its frames never baked. Both answers are the same pointer for frame 0.
+    const uint16_t *plate = custom_plate_frame(s_bgFrame);
+    if (!plate) plate = custom_plate();
     const uint8_t *overlay = custom_overlay();
     // Angles are needed before the plate now: a theme can ask the plate to rotate with a
     // hand, in which case the straight copy below becomes a rotated one.
@@ -1251,6 +1320,7 @@ static void draw_custom(const struct tm *ti) { compose_custom(ti, false, true); 
 // are the two full-screen passes: 28.7 ms copying the plate and 26.1 ms mixing the overlay
 // across 217,156 pixels. Both scale with area, so a hand covering a quarter of the dial costs
 // a quarter of each, and a sweep becomes affordable rather than impossible.
+
 static lv_timer_t *s_tick = nullptr;
 // A rolling average of what one sweep frame costs, in milliseconds, measured end to end
 // including everything LVGL then does with it.
@@ -1625,6 +1695,29 @@ static void tick_cb(lv_timer_t * /*t*/) {
     if (orb_screen_covered()) return;
     struct tm ti;
     time_for_face(&ti);
+
+    // THEME_CAPS 55. Advancing a background frame changes every pixel beneath the hand, so
+    // the cache of what is under it is now a picture of the wrong background. Dropping it is
+    // the whole cost of this feature, and holding on frame nought is what keeps it rare.
+    {
+        const int want = bg_anim_frame();
+        if (want != s_bgFrame) {
+            s_bgFrame  = want;
+            s_underMin = -1;      // makes the sweep path rebuild below
+            s_fullNext = true;    // and the frame after it repaint in full
+        }
+        // Keep time with the animation while it runs, not with the second hand. A design
+        // that ticks rather than sweeps is asked for a frame a second, which would play a
+        // six-a-second animation six times too slowly; retime() puts this back afterwards.
+        if (s_tick) {
+            const theme_style::Clock::BgAnim &a2 = theme_style::clock().bgAnim;
+            const bool running = a2.frames > 0 && (a2.loop || bg_anim_playing());
+            const uint32_t want2 = running
+                ? (uint32_t)(1000 / (a2.fps < 1 ? 1 : a2.fps))
+                : (sweep_possible() ? sweep_period() : 1000);
+            if (want2 != s_tickPeriod) { s_tickPeriod = want2; lv_timer_set_period(s_tick, want2); }
+        }
+    }
 
     if (sweep_possible()) {
         // The cache is of one minute. When the minute rolls, the hour and minute hands have

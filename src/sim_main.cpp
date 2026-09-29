@@ -950,7 +950,11 @@ int main(int argc, char **argv) {
     // clock: the feature under test is what happens when the CURRENT APP ignores a
     // press, and with no apps registered there is no current app to ignore one. Left
     // off this line, the harness waited forever for a roster that never arrived.
-    if (interactive || wifiShot || knobShot || windShot || rockShot) sim_register_apps(radarScreen);   // live app switcher driven by the virtual knob
+    // gifPath is in this list because a --gif capture is the only way to watch a screen
+    // MOVE, and a screen that moves is usually an app. Without the shell registered the
+    // capture could only ever film the radar, which is what it was doing, and SIM_APP had
+    // nothing to choose between.
+    if (interactive || wifiShot || knobShot || windShot || rockShot || gifPath) sim_register_apps(radarScreen);   // live app switcher driven by the virtual knob
 #if CUSTOM_BOOT_TARGET == 1
     // Set only by the splash push (the clock push clears it, even if a custom
     // splash is still baked in) — so this is genuinely "you just pushed the
@@ -1852,6 +1856,35 @@ int main(int argc, char **argv) {
                 char path[300]; snprintf(path, sizeof(path), "%s-brief.bmp", newsShot);
                 sim_save_frame(path);
                 run = false;
+            }
+        }
+
+        // SIM_APP=<name or index>: start on a chosen app instead of whatever comes up first.
+        // Added for the moving background (THEME_CAPS 55), which lives on the clock and so
+        // could not be watched at all by a --gif capture that always filmed the radar. Useful
+        // beyond that: any screen that has to be watched MOVING, rather than photographed
+        // once, needs a way to be the one on screen while it is filmed.
+        {
+            // Checked every pass rather than set once. The splash finishes on its own clock
+            // and puts the shell back on its own choice afterwards, so a single selection
+            // made while the splash was still up was quietly undone and the capture filmed
+            // whatever the shell preferred. Re-asserting costs a string compare a frame.
+            if (now - start > 2500) {
+                if (const char *want = getenv("SIM_APP")) {
+                    if (strcasecmp(app_shell::name(), want) != 0) {
+                    bool done = false;
+                    for (int i = 0; i < app_shell::count() && !done; ++i) {
+                        app_shell::selectApp(i);
+                        if (!strcasecmp(app_shell::name(), want)) done = true;
+                    }
+                    if (!done) {
+                        const int idx = atoi(want);
+                        app_shell::selectApp(idx >= 0 && idx < app_shell::count() ? idx : 0);
+                    }
+                    if (app_shell::index() == app_shell::APP_CLOCK) clockview::refresh();
+                    lv_timer_handler();
+                    }
+                }
             }
         }
 

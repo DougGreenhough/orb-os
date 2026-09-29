@@ -7,6 +7,11 @@
 struct CustomSprite { const uint8_t *data; int w, h; };  // RGB565+alpha, 3 bytes/px (lo,hi,alpha)
 
 const uint16_t *custom_plate();     // 466x466 RGB565 opaque background, or nullptr
+// THEME_CAPS 55. One frame of a moving background. Frame 0 IS custom_plate(), so a still
+// theme and the first frame of a moving one are the same bytes and the same code path.
+// Frames 1..n come from clock_plate_01.png upward, flash first like everything else.
+// nullptr when the theme ships no such frame, which is the answer for every older theme.
+const uint16_t *custom_plate_frame(int index);
 const uint8_t  *custom_overlay();   // 466x466 RGB565+alpha (3 B/px) over-hands layer, or nullptr
 // The SPLASH's glass. Deliberately a different file from custom_overlay(): that one is the
 // clock's, and Studio bakes the hand-pivot hub into it. See the note on the definition.

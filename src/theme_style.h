@@ -405,7 +405,25 @@ namespace theme_style {
 //
 //      It is an ordinary TextSlot, so it has every control the other lines have, including
 //      the pill, the arc and ALL CAPS. An Orb below this level ignores it entirely.
-constexpr int THEME_CAPS = 54;
+//
+//  55  a moving background. The clock plate can carry extra frames, clock_plate_01.png
+//      upwards, and the theme says how they play. Frame nought is the ordinary plate, so a
+//      theme built this way still looks right on an Orb that has never heard of this: it
+//      finds no extra frames, draws the plate it always drew, and nothing is missing.
+//
+//      Deliberately able to HOLD. A background that changes every frame throws away the
+//      cache the sweeping second hand depends on (see clock_view.cpp), which costs about a
+//      third of the hand's smoothness for as long as it runs. Holding on frame nought and
+//      playing now and then costs exactly nothing in between, because a still background is
+//      the case the cache was built for. Zion's design, 2026-09-28.
+constexpr int THEME_CAPS = 55;
+
+// The most extra background frames a theme may name. Not a storage limit, which Studio
+// enforces in bytes because only Studio knows the resolution: this is the ceiling on how
+// many files the device will go looking for, and on how much PSRAM the SD fallback path
+// could be asked to hold, so that a bad number in a shared theme file cannot ask for either
+// without limit. Sixty-four frames is about ten seconds at six a second.
+constexpr int BG_ANIM_MAX = 64;
 
 struct ClockText {
     // ALL CAPS. THEME_CAPS 53. Applied to the finished line at the moment of drawing, so it
@@ -458,6 +476,15 @@ struct Clock {
     // top. Without this the border sat at one fixed angle while the hand moved, lining up
     // once an hour by coincidence.
     int       plateFollow = 0;
+    // THEME_CAPS 55. A moving background: how many extra frames the theme ships, how fast
+    // they run, and how often they are allowed to. Frames is 0 for a still plate, which is
+    // every theme that existed before this.
+    struct BgAnim {
+        int  frames  = 0;      // EXTRA frames beyond the plate itself; 0 means a still plate
+        int  fps     = 6;      // 1..30, how fast one play runs
+        bool loop    = false;  // true: never stops. false: hold on frame nought, play now and then
+        int  everySec = 3600;  // when holding, how long between plays. 3600 is the top of the hour
+    } bgAnim;
     // THEME_CAPS 43. Which side of the hands the two text banners fall on. False, the way it
     // has always drawn, puts the hands over the words: a watch sweeps its hands across
     // whatever is printed on the dial. True lifts the words on top, which is what a date
