@@ -22,7 +22,11 @@ constexpr uint32_t MAGIC       = 0x4F524254;   // 'ORBT'
 // the previous blob's tail, leaving white bands baked into the artwork.
 // 6: the bake now includes every font slot (theme_art_bake.cpp), so a v5 cache is one with
 // most of its theme's typography missing and has to be rebuilt.
-constexpr uint32_t VERSION     = 6;
+// 7: the moving background's frames became bakeable (THEME_CAPS 55). A theme pushed before
+// that already DECLARED its frames, so its fingerprint already counted them and the re-bake
+// check would have said "already baked and unchanged" forever, leaving the frames on the
+// card where the device never looks for them. Only a version bump resyncs that.
+constexpr uint32_t VERSION     = 7;
 constexpr size_t   INDEX_BYTES = 8192;         // two 4 KB sectors
 constexpr size_t   SECTOR      = 4096;
 

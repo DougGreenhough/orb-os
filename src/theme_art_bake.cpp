@@ -150,6 +150,16 @@ bool bake_active_theme() {
     const char *const *FONT_ASSETS = theme_font::slot_files(fontN);
     for (size_t i = 0; i < fontN; ++i) if (theme_style::hasAsset(FONT_ASSETS[i])) ++totalPlanned;
     for (size_t i = 0; i < ASSET_N; ++i) if (theme_style::hasAsset(ASSETS[i].name)) ++totalPlanned;
+    // THEME_CAPS 55. The extra frames of a moving background are NOT in ASSETS, because how
+    // many there are is the theme's answer and not a fixed list. Named the same way the
+    // firmware looks for them, clock_plate_01.png upward, and counted here so the progress
+    // bar during an install tells the truth.
+    const int animFrames = theme_style::clock().bgAnim.frames;
+    char frameName[24];
+    for (int fN = 1; fN <= animFrames; ++fN) {
+        snprintf(frameName, sizeof(frameName), "clock_plate_%02d.png", fN);
+        if (theme_style::hasAsset(frameName)) ++totalPlanned;
+    }
     if (s_progress) s_progress(nullptr, 0, totalPlanned);
     int attempted = 0;
 
@@ -197,6 +207,33 @@ bool bake_active_theme() {
             ++baked;
             Serial.printf("[theme_art] baked %-22s %dx%d %u KB\n",
                           ASSETS[i].name, w, h, (unsigned)(bytes / 1024));
+        }
+        heap_caps_free(raw);
+    }
+
+    // The moving background's frames. Same conversion as the plate above, which they are:
+    // opaque RGB565 at the full size of the dial. Nothing else about them is special, and
+    // skipping any one of them costs only that frame, so a theme whose last frame will not
+    // fit still plays the ones that did.
+    for (int fN = 1; fN <= animFrames; ++fN) {
+        snprintf(frameName, sizeof(frameName), "clock_plate_%02d.png", fN);
+        if (!theme_style::hasAsset(frameName)) continue;
+        if (s_progress) s_progress(frameName, ++attempted, totalPlanned);
+        char path[80];
+        snprintf(path, sizeof(path), "/themes/%s/%s", slug, frameName);
+        size_t pngLen = 0;
+        uint8_t *pngBuf = theme_sd::read_whole(path, pngLen, SD_ASSET_MAX_BYTES);
+        if (!pngBuf) continue;
+        uint8_t *raw = nullptr;
+        int w = 0, h = 0;
+        const bool ok = decode_png(pngBuf, pngLen, false, raw, w, h);
+        theme_sd::free(pngBuf);
+        if (!ok) { Serial.printf("[theme_art] %s: decode failed, leaving on SD\n", frameName); continue; }
+        const size_t bytes = (size_t)w * h * 2;
+        if (install_asset(slug, frameName, w, h, FMT_RGB565, raw, bytes)) {
+            ++baked;
+            Serial.printf("[theme_art] baked %-22s %dx%d %u KB (frame)\n",
+                          frameName, w, h, (unsigned)(bytes / 1024));
         }
         heap_caps_free(raw);
     }

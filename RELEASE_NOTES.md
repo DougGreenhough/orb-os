@@ -18,6 +18,13 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.36
+
+- A moving background actually moves. Its frames were being written to the card but never
+  loaded, so the picture sat on its first frame however the theme was set
+
+---
+
 ## 2.16.35
 
 - A slow moving background no longer slows the second hand with it. A background set to
