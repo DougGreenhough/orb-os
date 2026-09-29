@@ -1706,15 +1706,20 @@ static void tick_cb(lv_timer_t * /*t*/) {
             s_underMin = -1;      // makes the sweep path rebuild below
             s_fullNext = true;    // and the frame after it repaint in full
         }
-        // Keep time with the animation while it runs, not with the second hand. A design
-        // that ticks rather than sweeps is asked for a frame a second, which would play a
-        // six-a-second animation six times too slowly; retime() puts this back afterwards.
+        // Tick fast enough for whichever of the two needs it more, never just the animation.
+        //
+        // This took the animation's rate and DROPPED the hand's, which is fine at six frames
+        // a second and ruinous at one: a background clicking once a second, which is exactly
+        // what a mechanical gear train wants to do, set the whole clock to one frame a second
+        // and turned a sweeping hand into a ticking one. The two are not alternatives. The
+        // animation advances on its own clock inside bg_anim_frame(), so asking for frames
+        // more often than it needs costs it nothing and keeps the hand at its own rate.
         if (s_tick) {
             const theme_style::Clock::BgAnim &a2 = theme_style::clock().bgAnim;
             const bool running = a2.frames > 0 && (a2.loop || bg_anim_playing());
-            const uint32_t want2 = running
-                ? (uint32_t)(1000 / (a2.fps < 1 ? 1 : a2.fps))
-                : (sweep_possible() ? sweep_period() : 1000);
+            const uint32_t base = sweep_possible() ? sweep_period() : 1000;
+            const uint32_t need = (uint32_t)(1000 / (a2.fps < 1 ? 1 : a2.fps));
+            const uint32_t want2 = running ? (need < base ? need : base) : base;
             if (want2 != s_tickPeriod) { s_tickPeriod = want2; lv_timer_set_period(s_tick, want2); }
         }
     }

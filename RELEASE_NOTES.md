@@ -18,6 +18,14 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.35
+
+- A slow moving background no longer slows the second hand with it. A background set to
+  change once a second, which is what a ticking gear train wants, was setting the whole
+  clock to one frame a second and turning a sweeping hand into a ticking one
+
+---
+
 ## 2.16.34
 
 - A clock background can now be a moving picture. Choose an animated GIF for the background
