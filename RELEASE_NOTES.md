@@ -18,6 +18,19 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.34
+
+- A clock background can now be a moving picture. Choose an animated GIF for the background
+  in Orb Studio and say how it should play: held still and set going every so often, or
+  running without stopping
+- Held is the one to pick. Between plays it costs nothing at all and the second hand stays
+  exactly as smooth as it is now, where a background that never stops slows it by about a
+  third for as long as it runs
+- Themes made this way still look right on an Orb that has not updated: it shows the first
+  frame, standing still
+
+---
+
 ## 2.16.33
 
 - Your Orb now always shows the real sky. It could be told to invent aircraft by a theme,
