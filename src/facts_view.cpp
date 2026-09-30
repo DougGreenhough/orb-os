@@ -38,6 +38,7 @@ constexpr int MID = SCREEN / 2;
 constexpr uint32_t FACT_MS    = 45000;   // how long a fact stays up
 constexpr uint32_t FADE_OUT_MS = 180;
 constexpr uint32_t FADE_IN_MS  = 320;
+constexpr uint32_t TURN_GAP_MS = 600;   // at most one change per this, from turning
 constexpr uint32_t PRESS_WAIT_MS = 6000; // a press with nothing in hand gives up after this
 
 // The fact is fitted inside this circle. The topic and source arcs live outside it, in the
@@ -422,6 +423,18 @@ void onPress() {
     advance(true);
 }
 
-void onTurn(int) {}
+// A turn either way is the same as a press: next fact. A spin delivers a detent every few
+// milliseconds, so turns are limited to one change per TURN_GAP_MS and the rest are dropped
+// rather than queued; otherwise a flick of the knob would burn through a dozen facts (and a
+// dozen relay requests) in a second.
+void onTurn(int delta) {
+    static uint32_t last = 0;
+    static bool any = false;
+    if (!delta || !s_showing) return;
+    if (any && lv_tick_elaps(last) < TURN_GAP_MS) return;
+    any = true;
+    last = lv_tick_get();
+    onPress();
+}
 
 }  // namespace factsview
