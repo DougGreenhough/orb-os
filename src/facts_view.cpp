@@ -16,6 +16,7 @@
 #include "facts_view.h"
 #include "facts_client.h"
 #include "facts_layout.h"
+#include "ponderer.h"
 #include "curved_text.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,6 +25,9 @@
 #include <math.h>
 #if defined(ESP_PLATFORM)
 #include <esp_heap_caps.h>
+#endif
+#ifdef ARDUINO
+#include <WiFi.h>
 #endif
 
 namespace {
@@ -69,6 +73,7 @@ lv_obj_t *s_emptyText = nullptr;
 Arc s_topic, s_source;
 lv_timer_t *s_cycle = nullptr;    // FACT_MS between facts
 lv_timer_t *s_giveUp = nullptr;   // undoes a press's dimming if nothing arrives
+lv_timer_t *s_recheck = nullptr;  // keeps an empty state's reason current
 
 facts::Fact s_cur = {};
 bool s_have = false;              // s_cur is on screen
@@ -227,18 +232,31 @@ void show(lv_obj_t *o, bool on) {
     if (on) lv_obj_clear_flag(o, LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
 }
 
+// Why there is nothing to show. WiFi is asked here as well as on the net side because the
+// device's network task only runs the relay modules while connected, so it never gets the
+// chance to report that it is not.
+facts::Status empty_reason() {
+    if (!ponderer::configured()) return facts::ST_UNCONFIGURED;
+    const facts::Status st = facts::status();
+#ifdef ARDUINO
+    if (st != facts::ST_UNCONFIGURED && WiFi.status() != WL_CONNECTED) return facts::ST_OFFLINE;
+#endif
+    return st == facts::ST_OFFLINE ? facts::ST_WAITING : st;   // WiFi is back: asking again
+}
+
+void draw_empty() {
+    const char *const *w = empty_words(empty_reason());
+    if (strcmp(lv_label_get_text(s_emptyTitle), w[0])) lv_label_set_text(s_emptyTitle, w[0]);
+    if (strcmp(lv_label_get_text(s_emptyText), w[1])) lv_label_set_text(s_emptyText, w[1]);
+}
+
 // Everything on screen from s_cur/s_have and the client's status.
 void redraw() {
     show(s_body, s_have);
     show(s_emptyTitle, !s_have);
     show(s_emptyText, !s_have);
-    if (s_have) {
-        draw_fact();
-    } else {
-        const char *const *w = empty_words(facts::status());
-        lv_label_set_text(s_emptyTitle, w[0]);
-        lv_label_set_text(s_emptyText, w[1]);
-    }
+    if (s_have) draw_fact();
+    else draw_empty();
     draw_arcs();
 }
 
@@ -306,6 +324,8 @@ void on_give_up(lv_timer_t *t) {
     if (!s_fading) fade(LV_OPA_COVER, FADE_IN_MS, nullptr);
 }
 
+void on_recheck(lv_timer_t *) { if (s_showing && !s_have) draw_empty(); }
+
 // UI side of facts_client: a fact arrived or the status changed.
 void on_news() {
     if (!s_scr) return;
@@ -355,6 +375,8 @@ void init() {
     lv_timer_pause(s_cycle);
     s_giveUp = lv_timer_create(on_give_up, PRESS_WAIT_MS, nullptr);
     lv_timer_pause(s_giveUp);
+    s_recheck = lv_timer_create(on_recheck, 1000, nullptr);
+    lv_timer_pause(s_recheck);
 
     redraw();
     facts::start(on_news);
@@ -377,6 +399,7 @@ void onEnter() {
     redraw();
     lv_timer_reset(s_cycle);
     lv_timer_resume(s_cycle);
+    lv_timer_resume(s_recheck);
 }
 
 void onExit() {
@@ -384,6 +407,7 @@ void onExit() {
     facts::setShowing(false);
     lv_timer_pause(s_cycle);
     lv_timer_pause(s_giveUp);
+    lv_timer_pause(s_recheck);
     lv_anim_del(s_card, set_opa);
     if (s_fading) { s_cur = s_pending; s_fading = false; }
     lv_obj_set_style_opa(s_card, LV_OPA_COVER, 0);
