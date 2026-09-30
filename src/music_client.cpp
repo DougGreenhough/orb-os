@@ -150,7 +150,9 @@ bool fetch_art() {
     url_encode(id, sizeof(id), s_scratch.artId);
     snprintf(extra, sizeof(extra), "id=%s&s=%d", id, music::ART_PX);
     uint8_t *body = nullptr; size_t len = 0;
-    const size_t maxLen = 8 + (size_t)music::ART_PX * music::ART_PX * 2 + 64;
+    // Room for the largest cover the contract allows (s <= 300), so a relay that ignores s=
+    // still gives a usable picture (centred and clipped) instead of a refetch every poll.
+    const size_t maxLen = 8 + 300 * 300 * 2;
     if (!ponderer::get("spotify.art", extra, &body, &len, maxLen, 8000)) return false;
     int w = 0, h = 0;
     if (!ponderer::orb5_pixels(body, len, &w, &h) || w > 300 || h > 300) {
@@ -168,11 +170,12 @@ bool fetch_art() {
 }
 
 bool net_step() {
-    if (!s_showingFlag) return false;
     if (!ponderer::configured()) return false;   // the UI says so without our help
-    if (s_forgetArt.exchange(false)) s_haveArt[0] = 0;
-
+    // Commands go out even after the screen has been left: a volume change still in the
+    // debounce when the app switcher was rocked open is something the person asked for.
     bool fresh = send_commands();
+    if (!s_showingFlag) return false;
+    if (s_forgetArt.exchange(false)) s_haveArt[0] = 0;
     if (s_cmdFailed) fresh = true;
 
     if (s_pollNow.exchange(false)) s_nextPoll = now_ms();
@@ -225,7 +228,6 @@ void setShowing(bool on) {
             ponderer::release(s_artBody);
             s_artBody = nullptr;
             s_artId[0] = 0;
-            s_qLen = 0;   // a command nobody is watching the result of is not worth sending
         } else {
             s_pubNew = false;
             s_pub = Now{};
