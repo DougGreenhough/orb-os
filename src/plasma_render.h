@@ -49,6 +49,7 @@ struct Render {
     int segs;
     // the Power readout, drawn as light on the inside of the glass when showing
     float ring;                  // 0..1 how much of the arc is lit; < 0 hides it
+    float ringA;                 // its brightness, 0..1, for fading it out
 };
 
 // Allocate (PSRAM on the device) and build the tables. False if anything failed; the
