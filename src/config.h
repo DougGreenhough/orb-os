@@ -54,6 +54,10 @@
 #ifndef APP_PLASMA_ENABLED
 #define APP_PLASMA_ENABLED 1
 #endif
+// The Globe (globe_view.cpp): the Earth as the Sun sees it, with Doug's cities from orb-ponderer.
+#ifndef APP_GLOBE_ENABLED
+#define APP_GLOBE_ENABLED 1
+#endif
 
 // ---------- Home location ----------
 // A PLACEHOLDER, and deliberately not a place. The device has exactly two location inputs

@@ -7,6 +7,7 @@
 #include "photo_view.h"
 #include "facts_view.h"
 #include "plasma_view.h"
+#include "globe_view.h"
 
 namespace orb_extras {
 
@@ -35,6 +36,11 @@ void register_apps() {
     plasmaview::init();
     app_shell::add(plasmaview::screen(), "Plasma", plasmaview::onPress, plasmaview::onTurn, false,
                    plasmaview::onEnter, plasmaview::onExit, false);
+#endif
+#if APP_GLOBE_ENABLED
+    globeview::init();
+    app_shell::add(globeview::screen(), "Globe", globeview::onPress, globeview::onTurn, false,
+                   globeview::onEnter, globeview::onExit, false);
 #endif
 }
 

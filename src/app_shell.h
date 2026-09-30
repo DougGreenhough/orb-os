@@ -68,6 +68,9 @@ namespace app_shell {
 #if APP_PLASMA_ENABLED
         APP_PLASMA,
 #endif
+#if APP_GLOBE_ENABLED
+        APP_GLOBE,
+#endif
         APP_INTEL,
 #if !APPS_LAUNCH_ONE
         APP_TICKER,
