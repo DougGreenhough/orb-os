@@ -1,17 +1,18 @@
 // Photos: a random photo, full-bleed on the round glass, changing every minute.
 //
-// Two sources, chosen from a small menu (press, turn, press):
+// Two sources, chosen from a small menu:
 //   Pixel album  the relay (orb-ponderer) picks one, scales it to 466 x 466 and hands back
 //                raw ORB5 pixels, so the device does no decoding at all.
 //   SD card      a random file from /photos: .jpg/.jpeg (baseline), .png, or .orb5.
 //
-// The knob. The shell owns the uncaptured turn (it opens the app switcher), so this screen
-// only ever sees presses, and turns while it has taken the knob:
-//   press          opens the menu and takes the knob: Next photo / Pixel album / SD card,
-//                  with "Next photo" already highlighted, so press-press means "another".
-//   turn           moves the highlight (only while the menu is open).
-//   press again    does it, closes the menu, gives the knob back.
-//   5 s idle       closes the menu and gives the knob back, as if nothing was pressed.
+// The knob. Every detent reaches this screen (the app switcher is the rock gesture, which
+// input_router handles before a turn gets here), so nothing needs capturing:
+//   turn right     the next photo now: the prefetched one, so it is instant.
+//   turn left      the photo before, kept in memory; if there is none, another one.
+//                  Either restarts the one-minute timer.
+//   press          opens the menu: Next photo / Pixel album / SD card, with "Next photo"
+//                  highlighted. While it is open turns move the highlight, a press does
+//                  it and closes the menu, and 5 s without input closes it untouched.
 // The chosen source survives a reboot: NVS on the device, a file under /tmp in the
 // simulator (the same arrangement theme_select.cpp uses for the theme).
 //
@@ -26,9 +27,9 @@
 //     freezing the dial. Each chunk read also takes theme_sd::lock(), for the chime stream.
 //
 // Memory (see docs/memory.md). A frame is 466 x 466 RGB565, 434 KB, always PSRAM. At most
-// two exist: the one on the glass and the next one, prefetched so a change is instant. The
-// crossfade between them uses those same two, and the network side will not start a third
-// while it is running. Frames are taken on enter and given back on exit; one the network
+// three exist (1.3 MB): the one on the glass, the one before it (so a left turn is instant)
+// and the next one, prefetched so a right turn is. During a crossfade the outgoing photo
+// holds the prefetch's place, and the network side will not make a fourth. Frames are taken on enter and given back on exit; one the network
 // side is still holding is freed by that side on its next pass, never by this one (rule 2).
 // While a card file is being read its raw bytes are a third, transient buffer, capped at
 // SD_MAX_FILE and freed as soon as it is decoded.
@@ -153,7 +154,8 @@ std::atomic<uint8_t>  s_source{ SRC_PIXEL };
 
 Frame    s_back;                  // the prefetched next photo (network side fills it)
 bool     s_backReady = false;
-int      s_uiFrames = 0;          // frames the UI side is holding (1, or 2 mid-crossfade)
+int      s_uiFrames = 0;          // frames the UI side holds: on the glass, fading out, previous
+constexpr int MAX_FRAMES = 3;     // those, plus the prefetched next one, never more than this
 uint8_t  s_relayStatus = ST_WORKING;
 
 // Card bytes on their way from the UI side to the decoder.
@@ -166,7 +168,7 @@ char     s_rawName[96] = "";
 bool     s_sdFailed = false;
 char     s_sdFailWhy[40] = "";
 
-bool may_make_frame_locked() { return s_uiFrames + (s_backReady ? 1 : 0) < 2; }
+bool may_make_frame_locked() { return s_uiFrames + (s_backReady ? 1 : 0) < MAX_FRAMES; }
 
 // ---- network side ---------------------------------------------------------------------------
 
@@ -381,6 +383,7 @@ uint8_t s_scrimPx[SCRIM_H * 3];                // 1 px wide, tiled across by lv_
 lv_img_dsc_t s_scrimDsc;
 
 Frame    s_front, s_old;           // on the glass, and the one fading out under it
+Frame    s_prev;                   // the one shown before, kept so a left turn is instant
 uint32_t s_shownAt = 0;
 bool     s_wantNow = false;        // "Next photo", or a new source: swap as soon as one is ready
 bool     s_announce = false;       // show the source badge with the next photo
@@ -435,7 +438,7 @@ lv_obj_t *label(lv_obj_t *parent, const lv_font_t *font, uint32_t color) {
 
 void ui_frames_update() {
     std::lock_guard<std::mutex> g(s_mx);
-    s_uiFrames = (s_front.mem ? 1 : 0) + (s_old.mem ? 1 : 0);
+    s_uiFrames = (s_front.mem ? 1 : 0) + (s_old.mem ? 1 : 0) + (s_prev.mem ? 1 : 0);
 }
 
 // ---- persistence ----------------------------------------------------------------------------
@@ -547,7 +550,10 @@ void drop_old() {
         lv_img_set_src(s_img[under], nullptr);
         lv_img_cache_invalidate_src(&s_dsc[under]);
     }
-    frame_free(s_old);
+    // The photo that just left becomes "previous", so turning left brings it straight back.
+    frame_free(s_prev);
+    s_prev = s_old;
+    s_old = Frame();
     ui_frames_update();
 }
 
@@ -670,7 +676,7 @@ void consider_swap() {
         s_backReady = false;
         // Counted before the lock drops, so the network side cannot squeeze a third frame
         // in between taking this one and putting it on the glass.
-        s_uiFrames = (s_front.mem ? 1 : 0) + 1;
+        s_uiFrames = (s_front.mem ? 1 : 0) + (s_prev.mem ? 1 : 0) + 1;
     }
     put_on_glass(f);
 }
@@ -836,7 +842,7 @@ void sd_tick() {
     if (s_sdInFlight || (int32_t)(now_ms() - s_sdRetryAt) < 0) return;
     {
         std::lock_guard<std::mutex> g(s_mx);
-        if (s_backReady || s_rawReady || s_uiFrames > 1) return;
+        if (s_backReady || s_rawReady || s_uiFrames >= MAX_FRAMES) return;
     }
     char path[112];
     switch (sd_pick(path, sizeof(path))) {
@@ -901,6 +907,25 @@ void ui_apply() {
     render();
 }
 
+// ---- stepping by hand -----------------------------------------------------------------------
+
+// The prefetched photo, now. If it is still on its way it goes up the moment it lands.
+void next_now() { s_wantNow = true; consider_swap(); }
+
+// The photo before this one, from memory. Gone (never shown, or a source change): another.
+void go_back() {
+    if (s_old.mem) {                             // mid-fade: settle it, which fills s_prev
+        lv_anim_del(s_img[s_top], fade_cb);
+        lv_obj_set_style_img_opa(s_img[s_top], LV_OPA_COVER, 0);
+        drop_old();
+    }
+    if (!s_prev.mem || s_prev.src != s_source.load()) { next_now(); return; }
+    Frame f = s_prev;
+    s_prev = Frame();
+    ui_frames_update();
+    put_on_glass(f);
+}
+
 // ---- the menu -------------------------------------------------------------------------------
 
 void menu_paint() {
@@ -919,7 +944,6 @@ void menu_open() {
     s_menuOpen = true;
     s_menuSel = 0;
     s_menuTouched = now_ms();
-    app_shell::setCaptured(true);
     menu_paint();
     show(s_menu, true);
     lv_anim_del(s_badge, nullptr);
@@ -930,7 +954,6 @@ void menu_open() {
 void menu_close() {
     if (!s_menuOpen) return;
     s_menuOpen = false;
-    app_shell::setCaptured(false);
     show(s_menu, false);
     render();
 }
@@ -946,6 +969,8 @@ void set_source(uint8_t src) {
     s_sdFailRun = 0;
     sd_set_status(ST_WORKING);
     set_relay_status(ST_WORKING);
+    frame_free(s_prev);          // "previous" belongs to the old source now
+    ui_frames_update();
     s_wantNow = true;
     s_announce = true;
     badge(src);                  // straight away, so the choice shows before the photo does
@@ -1117,6 +1142,7 @@ void onExit() {
     }
     frame_free(s_old);
     frame_free(s_front);
+    frame_free(s_prev);
     ui_frames_update();
     release_caption_canvas();
     show(s_scrim, false);
@@ -1134,7 +1160,12 @@ void onPress() {
 }
 
 void onTurn(int delta) {
-    if (!s_menuOpen) return;
+    if (!s_menuOpen) {
+        // At rest a detent is a step through the photos; the timer restarts either way.
+        if (delta > 0) next_now(); else if (delta < 0) go_back();
+        render();
+        return;
+    }
     s_menuSel += delta;
     if (s_menuSel < 0) s_menuSel = 0;
     if (s_menuSel > 2) s_menuSel = 2;
