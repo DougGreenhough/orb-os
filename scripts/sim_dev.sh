@@ -15,7 +15,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-PIO=~/.platformio/penv/bin/pio
+PIO=${PIO:-$(command -v pio || echo ~/.platformio/penv/bin/pio)}
 BIN=.pio/build/native/program
 FLAG=/tmp/orb_sim_updating
 LOG=/tmp/orb_sim_build.log
