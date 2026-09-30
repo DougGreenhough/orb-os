@@ -54,6 +54,10 @@
 #ifndef APP_PLASMA_ENABLED
 #define APP_PLASMA_ENABLED 1
 #endif
+// The Globe (globe_view.cpp): the Earth as the Sun sees it, with Doug's cities from orb-ponderer.
+#ifndef APP_GLOBE_ENABLED
+#define APP_GLOBE_ENABLED 1
+#endif
 // Screen cycle (orb_cycle.h). These are only the defaults: orb-ponderer's setup page
 // sets them per Orb, and the last settings it gave are kept across reboots.
 // ORB_CYCLE_DEFAULT_APPS is a comma-separated list of app names.
