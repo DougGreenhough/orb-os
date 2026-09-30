@@ -4,10 +4,12 @@
 // The key is a secret, so it is not written here. Put it in src/ponderer_secrets.h
 // (gitignored), which is picked up automatically when present:
 //
-//     #define PONDERER_KEY "the key the setup page showed you"
+//     #define PONDERER_KEY "op2_..."   // exactly as the setup page showed it
 //     // optionally: #define PONDERER_URL "http://192.168.1.20:8790/"
 //
-// Plain http:// on purpose: the device cannot do TLS (see intel_client.cpp).
+// Plain http:// on purpose: the device cannot do TLS (see intel_client.cpp). The
+// transport encrypts every request and answer itself instead (ponderer.cpp), so the
+// key is a secret that never goes on the wire.
 #if __has_include("ponderer_secrets.h")
 #include "ponderer_secrets.h"
 #endif

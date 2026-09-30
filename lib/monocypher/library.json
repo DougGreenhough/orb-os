@@ -1,0 +1,9 @@
+{
+  "name": "monocypher",
+  "version": "4.0.2",
+  "description": "Monocypher 4.0.2 (vendored, unmodified): XChaCha20-Poly1305 and BLAKE2b for orb-ponderer's transport. https://monocypher.org",
+  "license": "BSD-2-Clause OR CC0-1.0",
+  "frameworks": "*",
+  "platforms": "*",
+  "build": { "flags": "-O2" }
+}

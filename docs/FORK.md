@@ -20,14 +20,18 @@ both the device and the simulator; each has an `APP_*_ENABLED` switch in `config
 
 **orb-ponderer** (github.com/DougGreenhough/orb-ponderer) is the relay on
 spiritdemon.net that does what this board can't: HTTPS, OAuth, image resizing.
-`ponderer.{h,cpp}` is its client (plain HTTP, `docs/DEVICE-API.md` in that repo) and a
+`ponderer.{h,cpp}` is its client and a
 small scheduler: each app registers a `ponderer::Module` whose `netStep` runs on the
 network task (a thread in the simulator) and whose `uiApply` runs on the LVGL loop.
+
+The board can't do TLS, so the client encrypts every request and answer itself
+(XChaCha20-Poly1305, per-device keys, replay protection; "Transport" in orb-ponderer's
+`docs/DEVICE-API.md`) using Monocypher, vendored unmodified in `lib/monocypher`.
 
 The relay's key goes in `src/ponderer_secrets.h` (gitignored):
 
 ```c
-#define PONDERER_KEY "from the orb-ponderer setup page"
+#define PONDERER_KEY "op2_..."   // from the orb-ponderer setup page
 ```
 
 ## The knob
@@ -41,7 +45,7 @@ Facts turn = next fact; a press opens each app's own options where it has any.
 
 ```bash
 pio run -e native && .pio/build/native/program
-ORB_PONDERER_URL=http://127.0.0.1:8790/ ORB_PONDERER_KEY=... .pio/build/native/program
+ORB_PONDERER_URL=http://127.0.0.1:8790/ ORB_PONDERER_KEY=op2_... .pio/build/native/program
 ```
 
 - `--appshot <App> <prefix>` opens one app and follows `SIM_KEYS`: `p` press, `>`/`<`
