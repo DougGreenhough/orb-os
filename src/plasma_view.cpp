@@ -24,7 +24,8 @@
 // along the bottom, with the number under it.
 //
 // Memory. Everything is taken on enter and given back on exit, all of it in PSRAM:
-// engine ~110 KB, accumulator 163 KB, frame 109 KB, bloom 2 x 43 KB, sprites ~40 KB.
+// engine 70 KB, accumulator 163 KB, frame 109 KB, bloom 2 x 43 KB, electrode and
+// reflection sprites ~60 KB, brush state 13 KB: about 500 KB, in nine blocks, none over 163 KB.
 #include "plasma_view.h"
 #include "plasma_engine.h"
 #include "plasma_render.h"
@@ -284,8 +285,10 @@ void onEnter() {
     s_lastMs = s_logAt = s_activityMs = lv_tick_get();
     s_frames = s_simUs = s_rasterUs = s_drawUs = s_segs = 0;
     if (!s_timer) s_timer = lv_timer_create(tick_cb, FRAME_MS, nullptr);
-    PLOG("[plasma] enter: %u bytes of PSRAM taken\n",
-         (unsigned)(sizeof(plasma::Engine) + plasma::RW * plasma::RW * 5 + plasma::LG * plasma::LG * 24));
+    PLOG("[plasma] enter: ~%u KB of PSRAM taken\n",
+         (unsigned)((sizeof(plasma::Engine) + plasma::RW * plasma::RW * 5 + plasma::LG * plasma::LG * 24
+                     + s_ren.elecS * s_ren.elecS * 7 + s_ren.reflW * s_ren.reflH
+                     + plasma::MAXF * plasma::FIBMAX * plasma::FIB * 4 + 1025 * 3) / 1024));
 }
 
 void onExit() {
