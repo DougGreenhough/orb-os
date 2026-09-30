@@ -470,6 +470,10 @@ void app_shell::prev() {
     if (s_count) load(next_visible(s_cur, -1), true, false);
 }
 
+void app_shell::goTo(int idx) {
+    if (idx >= 0 && idx < s_count && idx != s_cur) load(idx, true, idx > s_cur);
+}
+
 void app_shell::selectApp(int idx) {
     if (idx >= 0 && idx < s_count) load(idx, false, true);
 }

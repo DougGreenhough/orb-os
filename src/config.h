@@ -54,6 +54,21 @@
 #ifndef APP_PLASMA_ENABLED
 #define APP_PLASMA_ENABLED 1
 #endif
+// Screen cycle (orb_cycle.h). These are only the defaults: orb-ponderer's setup page
+// sets them per Orb, and the last settings it gave are kept across reboots.
+// ORB_CYCLE_DEFAULT_APPS is a comma-separated list of app names.
+#ifndef ORB_CYCLE_DEFAULT_ON
+#define ORB_CYCLE_DEFAULT_ON 0
+#endif
+#ifndef ORB_CYCLE_DEFAULT_SECS
+#define ORB_CYCLE_DEFAULT_SECS 30
+#endif
+#ifndef ORB_CYCLE_DEFAULT_RESUME
+#define ORB_CYCLE_DEFAULT_RESUME 120
+#endif
+#ifndef ORB_CYCLE_DEFAULT_APPS
+#define ORB_CYCLE_DEFAULT_APPS ""
+#endif
 
 // ---------- Home location ----------
 // A PLACEHOLDER, and deliberately not a place. The device has exactly two location inputs

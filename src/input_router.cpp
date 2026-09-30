@@ -7,6 +7,7 @@
 #include "display.h"   // markInput — input-to-glass timing
 #endif
 #include "app_shell.h"
+#include "orb_cycle.h"
 #include "knob.h"
 
 // What the knob does, in one place, shared by the device (main.cpp) and the simulator
@@ -124,6 +125,7 @@ void input_router::tick() {
 }
 
 void input_router::dispatch(int delta, bool pressed) {
+    if (delta != 0 || pressed) orb_cycle::noteInput();   // this fork: pause the screen cycle
     // The "Ready" notice owns the knob until it is acknowledged, and ANY input clears it:
     // a turn either way or a press. It used to demand a press specifically, which made a
     // notice that exists to say "the knob is yours again" the one screen where most of the

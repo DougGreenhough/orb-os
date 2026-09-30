@@ -60,6 +60,7 @@
 #include "forecast_view.h"
 #include "orb_extras.h"
 #include "ponderer.h"
+#include "orb_cycle.h"
 #include "ticker_view.h"
 #include "ticker.h"              // world headlines, read through the gateway
 #include <set>                       // audio: track which contacts are in range
@@ -3346,6 +3347,7 @@ void loop() {
     // label writes, and doing it now means the screen is already right when someone
     // turns the knob to it rather than blank for a moment.
     ponderer::ui_tick();
+    orb_cycle::tick(lv_tick_get());
     if (g_intelDirty) {
         g_intelDirty = false;
         intelview::onHeadlinesReady();

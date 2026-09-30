@@ -105,7 +105,8 @@ namespace app_shell {
     // so the caller can tell a press that did something from a press that vanished. The
     // clock registers none, which is the dead end knob_help exists to answer.
     bool pressCurrent();
-    void selectApp(int idx);  // jump straight to an app by index, no slide (e.g. forced setup at boot)
+    void selectApp(int idx);
+    void goTo(int idx);       // jump to an app by index WITH the slide (orb_cycle)  // jump straight to an app by index, no slide (e.g. forced setup at boot)
 
     // App-switcher overlay: turning shows a big app-name label over a live preview;
     // the first turn opens the switcher on the current app, further turns cycle apps,

@@ -29,6 +29,7 @@
 #include <thread>
 #include <chrono>
 #include "ponderer.h"
+#include "orb_cycle.h"
 #include "wx_radar.h"
 #include "wx_radar_client.h"
 #include "cloud_image.h"
@@ -1036,6 +1037,7 @@ int main(int argc, char **argv) {
                 lv_tick_inc(now2 - t); t = now2;
                 input_router::tick();
                 ponderer::ui_tick();
+                orb_cycle::tick(lv_tick_get());
                 lv_timer_handler();
                 SDL_Delay(2);
             }
@@ -1569,6 +1571,7 @@ int main(int argc, char **argv) {
             input_router::tick();
             poll_updating_overlay(now);
             ponderer::ui_tick();
+            orb_cycle::tick(lv_tick_get());
         }
         if (now - lastData >= 1000) {       // simulate a 1 Hz ADS-B poll
             lastData = now;
