@@ -6,7 +6,7 @@
 //   - the ring IS the progress bar: a thin track just inside the bezel, filled clockwise
 //     from twelve o'clock, green while playing and grey while paused;
 //   - the playing device's name, small and spaced, where the chord is still 330 px wide;
-//   - the cover, 200 px, whose corners sit 186 px from the centre and so well clear of the
+//   - the cover, 200 px, whose corners sit 172 px from the centre and so well clear of the
 //     ring;
 //   - title (scrolls when long), artist (truncates), and a line with the play state and
 //     the time.
@@ -36,11 +36,13 @@ constexpr int MID    = SCREEN / 2;
 constexpr int RING_D   = 452;   // outer diameter of the progress ring
 constexpr int RING_W   = 6;
 constexpr int ART      = music::ART_PX;
-constexpr int ART_Y    = 90;
-constexpr int DEVICE_Y = 58;
-constexpr int TITLE_Y  = 304;
-constexpr int ARTIST_Y = 338;
-constexpr int LINE_Y   = 370;
+constexpr int ART_Y    = 98;
+constexpr int DEVICE_Y = 66;
+constexpr int TITLE_Y  = 312;
+constexpr int TITLE_W  = 340;         // 24 px title; the chord inside the ring is ~390 px here
+constexpr int TITLE_W_SMALL = 372;   // the 20 px step-down may use a little more of it
+constexpr int ARTIST_Y = 346;
+constexpr int LINE_Y   = 378;
 
 constexpr uint32_t COL_TEXT   = 0xF2F2F2;
 constexpr uint32_t COL_DIM    = 0x8A8F98;
@@ -263,6 +265,7 @@ void render_line() {
 void render_controls() {
     const bool ctl = s_mode == M_CONTROL, vol = s_mode == M_VOLUME;
     show(s_scrim, ctl || vol);
+    lv_obj_set_style_bg_opa(s_scrim, vol ? 215 : 165, 0);   // the number needs a quieter ground
     for (int i = 0; i < C_COUNT; ++i) {
         show(s_ctl[i], ctl);
         const bool on = ctl && i == s_sel;
@@ -285,6 +288,30 @@ void render_controls() {
         set_text(s_volNum, buf);
         set_text(s_volIcon, v == 0 ? LV_SYMBOL_MUTE : v < 50 ? LV_SYMBOL_VOLUME_MID : LV_SYMBOL_VOLUME_MAX);
     }
+}
+
+// The title steps down a size before it resorts to moving: most long titles fit at 20 px,
+// and a line that sits still is easier to read from across a room than one that scrolls.
+// Only what still does not fit scrolls, circularly and slowly.
+void set_title(const char *t) {
+    if (strcmp(lv_label_get_text(s_title), t) == 0) return;
+    const lv_font_t *f = &lv_font_montserrat_24;
+    int box = TITLE_W;
+    lv_coord_t w = lv_txt_get_width(t, strlen(t), f, 0, LV_TEXT_FLAG_NONE);
+    if (w > box) {
+        f = &lv_font_montserrat_20;
+        box = TITLE_W_SMALL;
+        w = lv_txt_get_width(t, strlen(t), f, 0, LV_TEXT_FLAG_NONE);
+    }
+    // A scrolling line is cut off hard at both ends, so it gets the narrower box: those
+    // cut edges read as deliberate a little way in from the ring, and as a mistake against it.
+    if (w > box) box = TITLE_W;
+    lv_obj_set_style_text_font(s_title, f, 0);
+    lv_label_set_long_mode(s_title, w > box ? LV_LABEL_LONG_SCROLL_CIRCULAR : LV_LABEL_LONG_CLIP);
+    lv_obj_set_width(s_title, box);
+    lv_obj_set_pos(s_title, MID - box / 2,
+                   TITLE_Y + (lv_font_montserrat_24.line_height - f->line_height) / 2);
+    lv_label_set_text(s_title, t);
 }
 
 void empty(const char *icon, const char *head, const char *body, const char *foot) {
@@ -313,29 +340,29 @@ void render() {
     if (!ok) {
         if (!ponderer::configured())
             empty(LV_SYMBOL_SETTINGS, "Not set up",
-                  "This Orb has no relay key. Put it in src/ponderer_secrets.h and rebuild.", nullptr);
+                  "This Orb has no relay key.\nAdd it to src/ponderer_secrets.h\nand rebuild.", nullptr);
         else switch (s_now.status) {
         case music::ST_WAITING:
             empty(LV_SYMBOL_AUDIO, "Music", "Asking Spotify what is playing...", nullptr);
             break;
         case music::ST_UNREACHABLE:
             empty(LV_SYMBOL_WARNING, "Relay not answering",
-                  "orb-ponderer did not reply. Trying again every few seconds.", relay_host());
+                  "The relay gave no usable answer.\nTrying again every few seconds.", relay_host());
             break;
         case music::ST_UNLINKED:
             empty(LV_SYMBOL_AUDIO, "Spotify not linked",
-                  "Connect Spotify on the orb-ponderer setup page.", nullptr);
+                  "Connect it on the\norb-ponderer setup page.", nullptr);
             break;
         default:
             empty(LV_SYMBOL_AUDIO, "Nothing playing",
-                  "Start something in Spotify on any device and it will show here.", nullptr);
+                  "Start something in Spotify on\nany device and it shows here.", nullptr);
             break;
         }
         render_ring();
         return;
     }
 
-    set_text(s_title, s_now.title[0] ? s_now.title : "Untitled");
+    set_title(s_now.title[0] ? s_now.title : "Untitled");
     set_text(s_artist, s_now.artist);
     char dev[64];
     snprintf(dev, sizeof(dev), "%s", s_now.device[0] ? s_now.device : "Spotify");
@@ -422,6 +449,7 @@ void init() {
     s_device = label(s_body, &lv_font_montserrat_14, COL_DIM, MID, DEVICE_Y, 260);
     lv_obj_set_style_text_letter_space(s_device, 2, 0);
     lv_label_set_long_mode(s_device, LV_LABEL_LONG_DOT);
+    lv_obj_set_height(s_device, lv_font_montserrat_14.line_height);
 
     s_artBox = blank(s_body);
     lv_obj_set_size(s_artBox, ART, ART);
@@ -493,21 +521,21 @@ void init() {
     lv_obj_align(s_volIcon, LV_ALIGN_CENTER, 0, 58);
     lv_obj_add_flag(s_volIcon, LV_OBJ_FLAG_HIDDEN);
 
-    s_title = label(s_body, &lv_font_montserrat_24, COL_TEXT, MID, TITLE_Y, 330);
-    lv_label_set_long_mode(s_title, LV_LABEL_LONG_SCROLL_CIRCULAR);
+    s_title = label(s_body, &lv_font_montserrat_24, COL_TEXT, MID, TITLE_Y, TITLE_W);
     lv_obj_set_style_anim_speed(s_title, 30, 0);
     s_artist = label(s_body, &lv_font_montserrat_18, COL_DIM, MID, ARTIST_Y, 320);
     lv_label_set_long_mode(s_artist, LV_LABEL_LONG_DOT);
+    lv_obj_set_height(s_artist, lv_font_montserrat_18.line_height);   // one line, then "..."
     s_line = label(s_body, &lv_font_montserrat_16, COL_DIM, MID, LINE_Y, 300);
     lv_label_set_recolor(s_line, true);
 
     s_empty = blank(s_scr);
     lv_obj_set_size(s_empty, SCREEN, SCREEN);
-    s_emIcon = label(s_empty, &lv_font_montserrat_40, COL_FAINT, MID, 128, 200);
-    s_emHead = label(s_empty, &lv_font_montserrat_24, COL_TEXT, MID, 190, 340);
-    s_emBody = label(s_empty, &lv_font_montserrat_18, COL_DIM, MID, 232, 310);
+    s_emIcon = label(s_empty, &lv_font_montserrat_40, COL_FAINT, MID, 142, 200);
+    s_emHead = label(s_empty, &lv_font_montserrat_24, COL_TEXT, MID, 202, 340);
+    s_emBody = label(s_empty, &lv_font_montserrat_18, COL_DIM, MID, 244, 330);
     lv_label_set_long_mode(s_emBody, LV_LABEL_LONG_WRAP);
-    s_emFoot = label(s_empty, &lv_font_montserrat_14, COL_FAINT, MID, 330, 260);
+    s_emFoot = label(s_empty, &lv_font_montserrat_14, COL_DIM, MID, 332, 260);
     lv_label_set_long_mode(s_emFoot, LV_LABEL_LONG_DOT);
 
     s_now = music::Now{};
