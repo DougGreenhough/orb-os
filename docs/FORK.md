@@ -14,8 +14,14 @@ publishing steps and Orb Studio rules are about his product, not this fork.
 | Photos | `photo_view.*`, `photos_decode.*`, `photos_tjpgd.*` | orb-ponderer `photo.*`, or `/photos` on the SD card |
 | Facts | `facts_view.*`, `facts_client.*`, `facts_layout.*` | orb-ponderer: `fact` |
 | Plasma | `plasma_view.*`, `plasma_engine.*`, `plasma_render.*` | nothing; a port of Doug's plasma project |
+| Globe | `globe_view.*`, `globe_render.*`, `globe_texture.*` (baked by `tools/bake_globe_texture.py`) | orb-ponderer: `globe.cities` (the homepage's city list) |
 
-They sit between Flight Tracker and News. `orb_extras.cpp` registers all of them for
+They sit between Flight Tracker and News.
+
+**Screen cycle** (`orb_cycle.*`): steps through chosen apps every N seconds and pauses on
+any knob input until the Orb has been idle for M seconds. Chosen per Orb on the
+orb-ponderer setup page (fetched every 5 min, cached across reboots); defaults
+`ORB_CYCLE_*` in `config.h`; in the simulator `ORB_CYCLE="secs=8;resume=20;apps=Clock,Facts"`. `orb_extras.cpp` registers all of them for
 both the device and the simulator; each has an `APP_*_ENABLED` switch in `config.h`.
 
 **orb-ponderer** (github.com/DougGreenhough/orb-ponderer) is the relay on
@@ -39,7 +45,7 @@ The relay's key goes in `src/ponderer_secrets.h` (gitignored):
 Every turn goes to the current app (`input_router` → `app_shell::turnCurrent`); the app
 switcher is the **rock** gesture, not a turn. `setCaptured` no longer changes routing.
 So in this fork: Plasma turn = Power, Music turn = volume, Photos turn = next/previous,
-Facts turn = next fact; a press opens each app's own options where it has any.
+Facts turn = next fact, Globe turn = spin; a press opens each app's own options where it has any.
 
 ## Simulator
 

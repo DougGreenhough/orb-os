@@ -667,7 +667,7 @@ static void sim_register_apps(lv_obj_t *radarScreen) {
         else printf("[sim] forecast: live fetch failed, showing the MOCK forecast\n");
     }
 #endif
-    orb_extras::register_apps();   // Forecast, Music, Photos, Facts, Plasma, as on the device
+    orb_extras::register_apps();   // this fork's apps (orb_extras.cpp), as on the device
     // init() FIRST, and this is not a style preference.
     //
     // screen() returns null until init() has built it, and add() quietly rejects a null

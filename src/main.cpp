@@ -2707,7 +2707,7 @@ void setup() {
     // were written as bare integers and moving anything would have pointed the jumps at
     // the wrong screen. They name app_shell::Slot now, so the menu can be ordered the way it
     // should read: Settings last, after everything it configures.
-    orb_extras::register_apps();   // Forecast, Music, Photos, Facts, Plasma
+    orb_extras::register_apps();   // this fork's apps (orb_extras.cpp)
     psram_mark("after orb_extras");
     intelview::init();
     psram_mark("after intelview");
