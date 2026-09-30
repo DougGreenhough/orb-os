@@ -251,13 +251,13 @@ struct Pacer {
 // ---- ORB5 ----------------------------------------------------------------------------------
 
 bool decode_orb5(const uint8_t *raw, size_t len, uint16_t *dst, char *why, size_t wn, Pacer &pace) {
-    if (len < 8) { say(why, wn, "short ORB5"); return false; }
+    if (len < 8) { say(why, wn, "damaged .orb5"); return false; }
     const int w = raw[4] | (raw[5] << 8), h = raw[6] | (raw[7] << 8);
-    if (w <= 0 || h <= 0 || len < 8 + (size_t)w * h * 2) { say(why, wn, "truncated ORB5"); return false; }
+    if (w <= 0 || h <= 0 || len < 8 + (size_t)w * h * 2) { say(why, wn, "damaged .orb5"); return false; }
     const uint16_t *px = (const uint16_t *)(raw + 8);
     if (w == SIDE && h == SIDE) { memcpy(dst, px, photos_decode::FRAME_BYTES); return true; }
     RowSink k;
-    if (!rowsink_begin(k, w, h, dst)) { say(why, wn, "out of memory"); return false; }
+    if (!rowsink_begin(k, w, h, dst)) { say(why, wn, "not enough memory"); return false; }
     for (int y = 0; y < h; ++y) {
         rowsink_row(k, y, px + (size_t)y * w);
         if ((y & 31) == 0 && !pace.tick()) break;
@@ -309,15 +309,15 @@ bool decode_png(const uint8_t *raw, size_t len, uint16_t *dst, char *why, size_t
     // PNGdec's state is tens of KB: never on this stack, always PSRAM, and only for as long
     // as one decode takes.
     void *mem = photos_decode::alloc(sizeof(PNG));
-    if (!mem) { say(why, wn, "out of memory (PNG decoder)"); return false; }
+    if (!mem) { say(why, wn, "not enough memory"); return false; }
     PNG *png = new (mem) PNG();
     bool ok = false;
     const int rc = png->openRAM((uint8_t *)raw, (int)len, png_row);
     if (rc != PNG_SUCCESS) {
         const int e = png->getLastError();
-        say(why, wn, (rc == PNG_TOO_BIG || e == PNG_TOO_BIG) ? "PNG too wide for the decoder"
-                     : e == PNG_UNSUPPORTED_FEATURE ? "PNG is interlaced or 16-bit"
-                     : "PNG would not open");
+        say(why, wn, (rc == PNG_TOO_BIG || e == PNG_TOO_BIG) ? "PNG too wide"
+                     : e == PNG_UNSUPPORTED_FEATURE ? "interlaced or 16-bit PNG"
+                     : "damaged PNG");
     } else if (!png_lines_fit(png_pitch(png))) {
         // PNGdec keeps two scanlines in one PNG_MAX_BUFFERED_PIXELS array but only checks
         // that ONE fits, so a line between about half and all of it decodes a row and then
@@ -326,19 +326,19 @@ bool decode_png(const uint8_t *raw, size_t len, uint16_t *dst, char *why, size_t
         // what would let wider PNGs through.
         int widest = 1;
         while (png_lines_fit((png_bits_per_pixel(png) * (widest + 1) + 7) / 8)) ++widest;
-        snprintf(why, wn, "PNG wider than %d px (decoder line buffer)", widest);
+        snprintf(why, wn, "PNG over %d px wide", widest);
     } else {
         const int w = png->getWidth(), h = png->getHeight();
         RowSink k;
         uint16_t *line = (uint16_t *)photos_decode::alloc(sizeof(uint16_t) * (size_t)w);
         if (!line || !rowsink_begin(k, w, h, dst)) {
-            say(why, wn, "out of memory");
+            say(why, wn, "not enough memory");
         } else {
             PngCtx ctx = { png, &k, line, &pace };
             const int r = png->decode(&ctx, 0);
             rowsink_end(k);
             if (pace.stop) say(why, wn, "abandoned");
-            else if (r != PNG_SUCCESS) say(why, wn, "PNG decode error");
+            else if (r != PNG_SUCCESS) say(why, wn, "damaged PNG");
             else ok = true;
         }
         photos_decode::release(line);
@@ -455,7 +455,7 @@ bool decode_jpeg(const uint8_t *raw, size_t len, uint16_t *dst, photos_decode::M
     // one PSRAM block: 4 KB is under the auto-PSRAM threshold, so it has to be asked for.
     constexpr size_t POOL = 4096;
     uint8_t *mem = (uint8_t *)photos_decode::alloc(sizeof(JDEC) + POOL);
-    if (!mem) { say(why, wn, "out of memory (JPEG decoder)"); return false; }
+    if (!mem) { say(why, wn, "not enough memory"); return false; }
     JDEC *jd = (JDEC *)mem;
     memset(jd, 0, sizeof(JDEC));
     Cover c;
@@ -463,9 +463,9 @@ bool decode_jpeg(const uint8_t *raw, size_t len, uint16_t *dst, photos_decode::M
     bool ok = false;
     JRESULT r = jd_prepare(jd, jpg_in, mem + sizeof(JDEC), POOL, &ctx);
     if (r != JDR_OK) {
-        say(why, wn, r == JDR_FMT3 ? "progressive or unusual JPEG (baseline only)"
-                     : r == JDR_MEM1 ? "JPEG needs more decoder memory"
-                     : "JPEG header unreadable");
+        say(why, wn, r == JDR_FMT3 ? "progressive JPEG"
+                     : r == JDR_MEM1 ? "unusual JPEG"
+                     : "damaged JPEG");
     } else {
         jd->swap = 0;   // Bodmer's field: LVGL wants little-endian RGB565, as decoded
         const int w = jd->width, h = jd->height;
@@ -476,11 +476,11 @@ bool decode_jpeg(const uint8_t *raw, size_t len, uint16_t *dst, photos_decode::M
         while (scale < 3 && (shortSide >> (scale + 1)) >= SIDE) ++scale;
         const int sw = (w + (1 << scale) - 1) >> scale, sh = (h + (1 << scale) - 1) >> scale;
         if (!cover_setup(c, sw, sh, ex.orient)) {
-            say(why, wn, "out of memory");
+            say(why, wn, "not enough memory");
         } else {
             r = jd_decomp(jd, jpg_out, (uint8_t)scale);
             if (pace.stop) say(why, wn, "abandoned");
-            else if (r != JDR_OK) say(why, wn, "JPEG data damaged");
+            else if (r != JDR_OK) say(why, wn, "damaged JPEG");
             else ok = true;
             cover_free(c);
         }
@@ -575,7 +575,7 @@ bool decode(const uint8_t *raw, size_t len, uint16_t *dst, Meta &meta,
     if (!memcmp(raw, "ORB5", 4)) return decode_orb5(raw, len, dst, why, whyLen, pace);
     if (!memcmp(raw, "\x89PNG", 4)) return decode_png(raw, len, dst, why, whyLen, pace);
     if (raw[0] == 0xFF && raw[1] == 0xD8) return decode_jpeg(raw, len, dst, meta, why, whyLen, pace);
-    say(why, whyLen, "not an ORB5, PNG or JPEG file");
+    say(why, whyLen, "not a picture");
     return false;
 }
 

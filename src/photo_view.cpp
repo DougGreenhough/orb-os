@@ -79,7 +79,8 @@ constexpr uint32_t BADGE_MS       = 3000;     // how long the source name stays 
 constexpr uint32_t FADE_MS        = 700;      // crossfade between photos
 constexpr size_t   SD_CHUNK       = 16 * 1024;           // one card read: ~10 ms at 20 MHz
 constexpr uint32_t SD_TICK_BUDGET_MS = 12;               // card time per 20 ms UI tick
-constexpr size_t   SD_MAX_FILE    = 8u * 1024 * 1024;    // a 12 MP phone JPEG is 3-6 MB
+constexpr size_t   SD_MAX_FILE    = 6u * 1024 * 1024;    // a 12 MP phone JPEG is 3-6 MB
+#define SD_MAX_FILE_TEXT "6 MB"
 constexpr const char *SD_DIR      = "/photos";
 
 constexpr uint32_t COL_TEXT = 0xF2F2F2;
@@ -163,6 +164,7 @@ bool     s_rawReady = false;
 char     s_rawName[96] = "";
 // ...and what came of them when they would not decode.
 bool     s_sdFailed = false;
+char     s_sdFailWhy[40] = "";
 
 bool may_make_frame_locked() { return s_uiFrames + (s_backReady ? 1 : 0) < 2; }
 
@@ -313,7 +315,7 @@ bool sd_step() {
         if (ok) { f.mem = dst; f.px = (const uint16_t *)dst; strncpy(f.date, meta.date, sizeof(f.date) - 1); }
         else photos_decode::release(dst);
     } else {
-        strncpy(why, "no memory for a frame", sizeof(why) - 1);
+        strncpy(why, "not enough memory", sizeof(why) - 1);
     }
     photos_decode::release(raw);
     if (ok) {
@@ -327,7 +329,7 @@ bool sd_step() {
     std::lock_guard<std::mutex> g(s_mx);
     if (!keep_going()) { frame_free(f); return false; }
     if (ok) { s_back = f; s_backReady = true; }
-    else    s_sdFailed = true;
+    else    { s_sdFailed = true; snprintf(s_sdFailWhy, sizeof(s_sdFailWhy), "%s", why); }
     return true;
 }
 
@@ -364,6 +366,7 @@ lv_obj_t *s_badge = nullptr;       // "SD CARD", briefly, at the top
 lv_obj_t *s_msg = nullptr;         // empty states
 lv_obj_t *s_msgTitle = nullptr;
 lv_obj_t *s_msgHint = nullptr;
+lv_obj_t *s_msgIcon = nullptr;
 lv_obj_t *s_menu = nullptr;
 lv_obj_t *s_menuRow[3] = {};
 lv_obj_t *s_menuLbl[3] = {};
@@ -403,7 +406,11 @@ bool     s_sdInFlight = false;     // bytes handed over, answer not back yet
 uint32_t s_sdRetryAt = 0;
 int      s_sdCount = 0;            // eligible files at the last look
 int      s_sdFailRun = 0;          // consecutive files that would not decode
-char     s_lastPicked[96] = "";
+int      s_sdTried = 0;            // how many that run was, when it gave up
+char     s_sdWhy[40] = "";         // why the last one would not, in words for the dial
+char     s_lastPicked[96] = "";     // the last file tried...
+char     s_lastGood[96] = "";       // ...and the last one that worked; neither is picked next
+char     s_handed[96] = "";         // the file whose bytes are with the decoder now
 
 void show(lv_obj_t *o, bool on) {
     if (!o) return;
@@ -597,7 +604,9 @@ void put_on_glass(Frame &f) {
 
 // ---- what to say when there is no photo -----------------------------------------------------
 
-void message(const char *title, const char *detail) {
+void message(const char *icon, bool trouble, const char *title, const char *detail) {
+    lv_label_set_text(s_msgIcon, icon);
+    lv_obj_set_style_text_color(s_msgIcon, lv_color_hex(trouble ? COL_ACCENT : COL_DIM), 0);
     lv_label_set_text(s_msgTitle, title);
     lv_label_set_text(s_msg, detail);
 }
@@ -617,26 +626,30 @@ void render() {
     show(s_capCanvas, words);
     show(s_scrim, words);
     const bool msg = !photo && !s_menuOpen;
-    show(s_msgTitle, msg); show(s_msg, msg); show(s_msgHint, msg && st != ST_WORKING);
+    show(s_msgIcon, msg); show(s_msgTitle, msg); show(s_msg, msg); show(s_msgHint, msg && st != ST_WORKING);
     if (!msg) return;
     switch (st) {
-        case ST_NOT_CONFIGURED:  message("Pixel album not set up", "This Orb has no relay key.\nAdd one in ponderer_config.h."); break;
-        case ST_NO_WIFI:         message("No WiFi", "The Pixel album arrives over WiFi.\nYour Orb is fine."); break;
-        case ST_RELAY_DOWN:      message("Relay not answering", "orb-ponderer did not reply.\nTrying again shortly."); break;
-        case ST_RELAY_NO_SOURCE: message("No album chosen", "The relay has no photo source.\nPick one on its setup page."); break;
-        case ST_RELAY_EMPTY:     message("No photos came back", "The relay has a source but\nsent nothing. Is the album empty?"); break;
-        case ST_RELAY_BAD_IMAGE: message("Photo did not arrive", "The relay chose one but could\nnot send it. Trying again shortly."); break;
-        case ST_NO_CARD:         message("No SD card", "Put a card with a /photos\nfolder in the Orb."); break;
-        case ST_NO_FOLDER:       message("No /photos folder", "Make a folder called photos\nat the top of the SD card."); break;
-        case ST_NO_IMAGES:       message("No photos on the card", "/photos has no .jpg, .png\nor .orb5 files in it."); break;
+        case ST_NOT_CONFIGURED:  message(LV_SYMBOL_SETTINGS, true, "Pixel album not set up", "This Orb has no relay key.\nAdd one in ponderer_config.h."); break;
+        case ST_NO_WIFI:         message(LV_SYMBOL_WIFI, true, "No WiFi", "The Pixel album arrives over WiFi.\nYour Orb is fine."); break;
+        case ST_RELAY_DOWN:      message(LV_SYMBOL_WARNING, true, "Relay not answering", "orb-ponderer did not reply.\nTrying again shortly."); break;
+        case ST_RELAY_NO_SOURCE: message(LV_SYMBOL_IMAGE, true, "No album chosen", "The relay has no photo source.\nPick one on its setup page."); break;
+        case ST_RELAY_EMPTY:     message(LV_SYMBOL_IMAGE, true, "No photos came back", "The relay has a source but\nsent nothing. Is the album empty?"); break;
+        case ST_RELAY_BAD_IMAGE: message(LV_SYMBOL_WARNING, true, "Photo did not arrive", "The relay chose one but could\nnot send it. Trying again shortly."); break;
+        case ST_NO_CARD:         message(LV_SYMBOL_SD_CARD, true, "No SD card", "Put a card with a /photos\nfolder in the Orb."); break;
+        case ST_NO_FOLDER:       message(LV_SYMBOL_DIRECTORY, true, "No /photos folder", "Make a folder called photos\nat the top of the SD card."); break;
+        case ST_NO_IMAGES:       message(LV_SYMBOL_DIRECTORY, true, "No photos on the card", "/photos has no .jpg, .png\nor .orb5 files in it."); break;
         case ST_UNREADABLE: {
             static char detail[96];
-            snprintf(detail, sizeof(detail), "None of the %d files in /photos\nwould open. JPEGs must be baseline.", s_sdCount);
-            message("Can't read these photos", detail);
+            if (s_sdTried > 1)
+                snprintf(detail, sizeof(detail), "The last %d tried would not open.\nLast one: %s.", s_sdTried, s_sdWhy);
+            else
+                snprintf(detail, sizeof(detail), "The only photo would not open:\n%s.", s_sdWhy);
+            message(LV_SYMBOL_WARNING, true, s_sdTried > 1 ? "Can't read these photos" : "Can't read this photo", detail);
             break;
         }
         default:
-            message(src == SRC_SD ? "SD card" : "Pixel album", "Finding a photo...");
+            message(src == SRC_SD ? LV_SYMBOL_SD_CARD : LV_SYMBOL_IMAGE, false,
+                    src == SRC_SD ? "SD card" : "Pixel album", "Finding a photo...");
             break;
     }
 }
@@ -671,10 +684,13 @@ enum Pick { PICK_OK, PICK_NO_CARD, PICK_NO_FOLDER, PICK_EMPTY };
 struct Chooser {
     int count = 0, others = 0;
     char pick[96] = "";
+    char fallback[96] = "";          // an excluded one, for a folder with nothing else in it
+    void spare(const char *leaf) { if (!fallback[0]) snprintf(fallback, sizeof(fallback), "%s", leaf); }
     void offer(const char *leaf) {
         if (photos_decode::kind_of_name(leaf) == photos_decode::K_NONE) return;
         ++count;
-        if (s_lastPicked[0] && !strcmp(leaf, s_lastPicked)) return;
+        if (s_lastPicked[0] && !strcmp(leaf, s_lastPicked)) { spare(leaf); return; }
+        if (s_lastGood[0] && !strcmp(leaf, s_lastGood))     { spare(leaf); return; }
         ++others;
         if (rnd() % (uint32_t)others == 0) snprintf(pick, sizeof(pick), "%s", leaf);
     }
@@ -713,7 +729,7 @@ Pick sd_pick(char *path, size_t n) {
 #endif
     s_sdCount = ch.count;
     if (!ch.count) return PICK_EMPTY;
-    if (!ch.pick[0]) snprintf(ch.pick, sizeof(ch.pick), "%s", s_lastPicked);   // the only one
+    if (!ch.pick[0]) snprintf(ch.pick, sizeof(ch.pick), "%s", ch.fallback);   // only repeats left
     snprintf(path, n, "%s/%s", SD_DIR, ch.pick);
     snprintf(s_lastPicked, sizeof(s_lastPicked), "%s", ch.pick);
     return PICK_OK;
@@ -736,12 +752,14 @@ void sd_abort() {
 
 void sd_set_status(uint8_t st) { std::lock_guard<std::mutex> g(s_mx); s_sdStatus = st; }
 
-void sd_failed_file() {
+void sd_failed_file(const char *why) {
+    snprintf(s_sdWhy, sizeof(s_sdWhy), "%s", why);
     ++s_sdFailRun;
     const int limit = s_sdCount < 5 ? s_sdCount : 5;
     if (s_sdFailRun >= (limit > 0 ? limit : 1)) {
         sd_set_status(ST_UNREADABLE);
         s_sdRetryAt = now_ms() + SD_BADRUN_MS;
+        s_sdTried = s_sdFailRun;
         s_sdFailRun = 0;
     }
 }
@@ -797,7 +815,7 @@ void sd_tick() {
             Serial.printf("[photos] %s: read failed at %u of %u bytes\n", s_rd.name,
                           (unsigned)s_rd.got, (unsigned)s_rd.len);
             sd_abort();
-            sd_failed_file();
+            sd_failed_file("card read error");
             return;
         }
         if (s_rd.got < s_rd.len) return;
@@ -808,6 +826,7 @@ void sd_tick() {
             snprintf(s_rawName, sizeof(s_rawName), "%s", s_rd.name);
             s_rawReady = true;
         }
+        snprintf(s_handed, sizeof(s_handed), "%s", s_lastPicked);
         s_rd.buf = nullptr;
         s_rd = SdRead();
         s_sdInFlight = true;
@@ -834,15 +853,16 @@ void sd_tick() {
         Serial.printf("[photos] %s: would not open\n", path);
         sd_close();
         s_rd = SdRead();
-        sd_failed_file();
+        sd_failed_file("file would not open");
         return;
     }
     if (s_rd.len < 8 || s_rd.len > SD_MAX_FILE) {
         Serial.printf("[photos] %s: skipped, %u bytes is %s\n", path, (unsigned)s_rd.len,
-                      s_rd.len < 8 ? "too small to be a picture" : "over the 8 MB limit");
+                      s_rd.len < 8 ? "too small to be a picture" : "over the size limit");
+        const bool small = s_rd.len < 8;
         sd_close();
         s_rd = SdRead();
-        sd_failed_file();
+        sd_failed_file(small ? "not a picture" : "file over " SD_MAX_FILE_TEXT);
         return;
     }
     s_rd.buf = (uint8_t *)photos_decode::alloc(s_rd.len);
@@ -850,7 +870,7 @@ void sd_tick() {
         Serial.printf("[photos] %s: no %u KB block free to read it into\n", path, (unsigned)(s_rd.len / 1024));
         sd_close();
         s_rd = SdRead();
-        sd_failed_file();
+        sd_failed_file("not enough memory");
         return;
     }
     s_rd.busy = true;
@@ -863,15 +883,18 @@ void ui_apply() {
     if (!s_scr || !s_active.load()) return;
     bool failed;
     bool ready;
+    char why[40];
     {
         std::lock_guard<std::mutex> g(s_mx);
         failed = s_sdFailed; s_sdFailed = false;
         ready = s_backReady && s_back.src == SRC_SD;
+        snprintf(why, sizeof(why), "%s", s_sdFailWhy);
     }
-    if (failed) { s_sdInFlight = false; sd_failed_file(); }
+    if (failed) { s_sdInFlight = false; sd_failed_file(why); }
     if (ready) {
         s_sdInFlight = false;
         s_sdFailRun = 0;
+        snprintf(s_lastGood, sizeof(s_lastGood), "%s", s_handed);
         sd_set_status(ST_OK);
     }
     consider_swap();
@@ -925,6 +948,7 @@ void set_source(uint8_t src) {
     set_relay_status(ST_WORKING);
     s_wantNow = true;
     s_announce = true;
+    badge(src);                  // straight away, so the choice shows before the photo does
     Serial.printf("[photos] source: %s\n", source_name(src));
 }
 
@@ -984,6 +1008,8 @@ void build() {
     show(s_badge, false);
 
     // Empty states: a line saying what is wrong, two saying what to do, and where the menu is.
+    s_msgIcon = label(s_scr, &lv_font_montserrat_28, COL_DIM);
+    lv_obj_align(s_msgIcon, LV_ALIGN_CENTER, 0, -86);
     s_msgTitle = label(s_scr, &lv_font_montserrat_22, COL_TEXT);
     lv_obj_set_width(s_msgTitle, 320);
     lv_obj_align(s_msgTitle, LV_ALIGN_CENTER, 0, -38);
@@ -992,8 +1018,7 @@ void build() {
     lv_obj_set_style_text_line_space(s_msg, 4, 0);
     lv_obj_align(s_msg, LV_ALIGN_CENTER, 0, 16);
     s_msgHint = label(s_scr, &lv_font_montserrat_14, COL_DIM);
-    lv_label_set_text(s_msgHint, "Press for Next photo or another source");
-    lv_obj_set_style_text_opa(s_msgHint, 160, 0);
+    lv_label_set_text(s_msgHint, "Press for options");
     lv_obj_align(s_msgHint, LV_ALIGN_BOTTOM_MID, 0, -62);
 
     // The menu: the photo dimmed behind three rows.
@@ -1001,7 +1026,7 @@ void build() {
     lv_obj_set_size(s_menu, SIDE, SIDE);
     lv_obj_set_style_bg_color(s_menu, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(s_menu, 170, 0);
-    lv_obj_t *title = label(s_menu, &lv_font_montserrat_12, COL_DIM);
+    lv_obj_t *title = label(s_menu, &lv_font_montserrat_12, COL_SOFT);
     lv_obj_set_style_text_letter_space(title, 3, 0);
     lv_label_set_text(title, "PHOTOS");
     lv_obj_align(title, LV_ALIGN_CENTER, 0, -92);

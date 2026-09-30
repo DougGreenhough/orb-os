@@ -46,7 +46,8 @@ struct Meta {
 typedef bool (*keep_going_fn)();
 
 // Decode `raw` into dst (FRAME_BYTES, caller-allocated). On failure returns false and puts
-// a short reason in `why` for the log ("progressive JPEG", "PNG too wide").
+// a short reason in `why`, worded to be shown on the dial as well as logged
+// ("progressive JPEG", "PNG over 1360 px wide", "not a picture").
 bool decode(const uint8_t *raw, size_t len, uint16_t *dst, Meta &meta,
             char *why, size_t whyLen, keep_going_fn keepGoing);
 
