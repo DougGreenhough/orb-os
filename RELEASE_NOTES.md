@@ -18,6 +18,14 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.37
+
+- Older and smaller SD cards work again. The Orb runs the card fast, and a card that could
+  not keep up was reported as no card at all rather than simply being run slower. Found by
+  Overcore, who lost a day to a 2 GB card that was never faulty
+
+---
+
 ## 2.16.36
 
 - A moving background actually moves. Its frames were being written to the card but never
