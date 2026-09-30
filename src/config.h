@@ -40,6 +40,20 @@
 #ifndef APP_FORECAST_ENABLED
 #define APP_FORECAST_ENABLED 1
 #endif
+// The rest of this fork's apps (orb_extras.cpp), in menu order after the Forecast. Music,
+// Photos and Facts talk to orb-ponderer (ponderer.h); Plasma is local.
+#ifndef APP_MUSIC_ENABLED
+#define APP_MUSIC_ENABLED 1
+#endif
+#ifndef APP_PHOTOS_ENABLED
+#define APP_PHOTOS_ENABLED 1
+#endif
+#ifndef APP_FACTS_ENABLED
+#define APP_FACTS_ENABLED 1
+#endif
+#ifndef APP_PLASMA_ENABLED
+#define APP_PLASMA_ENABLED 1
+#endif
 
 // ---------- Home location ----------
 // A PLACEHOLDER, and deliberately not a place. The device has exactly two location inputs

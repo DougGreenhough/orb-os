@@ -56,6 +56,18 @@ namespace app_shell {
 #if APP_FORECAST_ENABLED
         APP_FORECAST,
 #endif
+#if APP_MUSIC_ENABLED
+        APP_MUSIC,
+#endif
+#if APP_PHOTOS_ENABLED
+        APP_PHOTOS,
+#endif
+#if APP_FACTS_ENABLED
+        APP_FACTS,
+#endif
+#if APP_PLASMA_ENABLED
+        APP_PLASMA,
+#endif
         APP_INTEL,
 #if !APPS_LAUNCH_ONE
         APP_TICKER,

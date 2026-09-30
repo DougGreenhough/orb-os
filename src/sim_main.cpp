@@ -25,6 +25,10 @@
 #include "weather.h"
 #include "weather_client.h"
 #include "forecast_view.h"
+#include "orb_extras.h"
+#include <thread>
+#include <chrono>
+#include "ponderer.h"
 #include "wx_radar.h"
 #include "wx_radar_client.h"
 #include "cloud_image.h"
@@ -661,10 +665,8 @@ static void sim_register_apps(lv_obj_t *radarScreen) {
         if (weather_fetch(g_set.homeLat, g_set.homeLon, live)) weather_store(live);
         else printf("[sim] forecast: live fetch failed, showing the MOCK forecast\n");
     }
-    forecastview::init();
-    app_shell::add(forecastview::screen(), "Forecast", nullptr, nullptr, false,
-                   forecastview::onEnter, forecastview::onExit, false);
 #endif
+    orb_extras::register_apps();   // Forecast, Music, Photos, Facts, Plasma, as on the device
     // init() FIRST, and this is not a style preference.
     //
     // screen() returns null until init() has built it, and add() quietly rejects a null
@@ -832,6 +834,13 @@ int main(int argc, char **argv) {
     // per icon kind plus Fahrenheit and the no-data state, because wherever the simulator
     // lives the live weather only ever shows one of them.
     const char *fcShot     = (argc >= 3 && strcmp(argv[1], "--forecastshot") == 0) ? argv[2] : NULL;
+    // --appshot <App name> <prefix>: open one app and drive it from a script, capturing as
+    // it goes, for building a screen without clicking. SIM_KEYS is the script, one
+    // character per step (default "nwwwwc"):
+    //   p press   > turn right   < turn left   w wait 250 ms (LVGL + ui_tick keep running)
+    //   n one synchronous ponderer::net_tick() then ui_tick   c capture <prefix>-<k>.bmp
+    const char *appShotApp = (argc >= 4 && strcmp(argv[1], "--appshot") == 0) ? argv[2] : NULL;
+    const char *appShot    = appShotApp ? argv[3] : NULL;
     // --newsshot is headless but drives the KNOB, so it needs the full app lineup that only
     // interactive mode registers. It is the one capture that walks the shell rather than
     // putting a single screen up directly.
@@ -1003,6 +1012,63 @@ int main(int argc, char **argv) {
     // active SD theme applied and no stock-skin override, then exit. This is what makes
     // workflow rule R3 ("sim before silicon") actually possible — before it, checking a
     // theme change meant flashing hardware and photographing the screen.
+    if (interactive && appShot) {
+        for (int i = 0; i < 600; ++i) { lv_timer_handler(); SDL_Delay(2); }
+        for (uint32_t i = 0; i < lv_obj_get_child_cnt(lv_layer_top()); ++i)
+            lv_obj_add_flag(lv_obj_get_child(lv_layer_top(), i), LV_OBJ_FLAG_HIDDEN);
+        int found = -1;
+        for (int i = 0; i < app_shell::count(); ++i)
+            if (!strcmp(app_shell::nameAt(i), appShotApp)) found = i;
+        if (found < 0) {
+            printf("[sim] --appshot: no app named '%s'. Apps:", appShotApp);
+            for (int i = 0; i < app_shell::count(); ++i) printf(" '%s'", app_shell::nameAt(i));
+            printf("\n");
+            SDL_Quit();
+            return 1;
+        }
+        app_shell::selectApp(found);
+        int ow, oh; SDL_GetRendererOutputSize(s_ren, &ow, &oh);
+        Uint32 t = SDL_GetTicks();
+        auto pump = [&](int ms) {
+            const Uint32 until = SDL_GetTicks() + ms;
+            while (SDL_GetTicks() < until) {
+                const Uint32 now2 = SDL_GetTicks();
+                lv_tick_inc(now2 - t); t = now2;
+                input_router::tick();
+                ponderer::ui_tick();
+                lv_timer_handler();
+                SDL_Delay(2);
+            }
+        };
+        const char *keys = getenv("SIM_KEYS") ? getenv("SIM_KEYS") : "nwwwwc";
+        int shot = 0;
+        for (const char *k = keys; *k; ++k) {
+            switch (*k) {
+            case 'p': input_router::dispatch(0, true);  pump(60); break;
+            case '>': input_router::dispatch(1, false); pump(60); break;
+            case '<': input_router::dispatch(-1, false); pump(60); break;
+            case 'w': pump(250); break;
+            case 'n': ponderer::net_tick(); ponderer::ui_tick(); pump(30); break;
+            case 'c': {
+                lv_refr_now(NULL);
+                SDL_RenderClear(s_ren);
+                SDL_RenderCopy(s_ren, s_tex, NULL, NULL);
+                if (SDL_Surface *surf = SDL_CreateRGBSurfaceWithFormat(0, ow, oh, 32, SDL_PIXELFORMAT_ARGB8888)) {
+                    SDL_RenderReadPixels(s_ren, NULL, SDL_PIXELFORMAT_ARGB8888, surf->pixels, surf->pitch);
+                    char path[300];
+                    snprintf(path, sizeof(path), "%s-%d.bmp", appShot, shot++);
+                    SDL_SaveBMP(surf, path);
+                    SDL_FreeSurface(surf);
+                    printf("[sim] appshot: %s\n", path);
+                }
+                break;
+            }
+            default: break;
+            }
+        }
+        SDL_Quit();
+        return 0;
+    }
 #if APP_FORECAST_ENABLED
     if (interactive && fcShot) {
         for (int i = 0; i < 600; ++i) { lv_timer_handler(); SDL_Delay(2); }
@@ -1408,6 +1474,13 @@ int main(int argc, char **argv) {
         return 0;
     }
 
+    // The device runs ponderer::net_tick() on its network task (core 0). The simulator's
+    // stand-in is a thread doing the same, so relay-fed apps update live here too. Only
+    // for real interactive runs: every capture mode has returned by this point.
+    std::thread([]() {
+        for (;;) { ponderer::net_tick(); std::this_thread::sleep_for(std::chrono::milliseconds(250)); }
+    }).detach();
+
     Uint32 last = SDL_GetTicks();
     Uint32 lastData = last;
     const Uint32 start = last;
@@ -1495,6 +1568,7 @@ int main(int argc, char **argv) {
             input_router::dispatch((int)kd, pressed);
             input_router::tick();
             poll_updating_overlay(now);
+            ponderer::ui_tick();
         }
         if (now - lastData >= 1000) {       // simulate a 1 Hz ADS-B poll
             lastData = now;

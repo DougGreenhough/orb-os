@@ -32,7 +32,7 @@ namespace {
         bool          hidden;    // registered but skipped when cycling the menu
     };
 
-    constexpr int   MAX_APPS      = 8;
+    constexpr int   MAX_APPS      = 12;   // was 8; this fork adds five
     constexpr uint32_t ANIM_MS    = 250;   // slide duration between apps
 
     App  s_apps[MAX_APPS];

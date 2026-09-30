@@ -58,6 +58,8 @@
 #include "spycam_view.h"             // Spy Cam: looping "security camera" flip-book
 #include "intel_view.h"
 #include "forecast_view.h"
+#include "orb_extras.h"
+#include "ponderer.h"
 #include "ticker_view.h"
 #include "ticker.h"              // world headlines, read through the gateway
 #include <set>                       // audio: track which contacts are in range
@@ -554,6 +556,7 @@ static void adsb_task(void*) {
             // a kilobyte, so there is nothing to spread over several cycles. fetchStep() owns its own timing and returns immediately when
             // nothing is due, which is almost every pass through this loop.
             if (intelview::fetchStep()) g_intelDirty = true;
+            ponderer::net_tick();   // this fork's relay-fed apps; each owns its own timing
             // Quotes, through the same gateway and for the same reason. Well under a
             // kilobyte for a whole watchlist, so like the headlines there is nothing here
             // worth spreading over several passes; the step owns its own timing and returns
@@ -2703,12 +2706,8 @@ void setup() {
     // were written as bare integers and moving anything would have pointed the jumps at
     // the wrong screen. They name app_shell::Slot now, so the menu can be ordered the way it
     // should read: Settings last, after everything it configures.
-#if APP_FORECAST_ENABLED
-    forecastview::init();
-    psram_mark("after forecastview");
-    app_shell::add(forecastview::screen(), "Forecast", nullptr, nullptr, false,
-                   forecastview::onEnter, forecastview::onExit, false);
-#endif
+    orb_extras::register_apps();   // Forecast, Music, Photos, Facts, Plasma
+    psram_mark("after orb_extras");
     intelview::init();
     psram_mark("after intelview");
     app_shell::add(intelview::screen(), theme_style::names().headlines,
@@ -3346,6 +3345,7 @@ void loop() {
     // here. Cheap enough to do whether or not the screen is showing: it is five short
     // label writes, and doing it now means the screen is already right when someone
     // turns the knob to it rather than blank for a moment.
+    ponderer::ui_tick();
     if (g_intelDirty) {
         g_intelDirty = false;
         intelview::onHeadlinesReady();
