@@ -11,20 +11,19 @@
 //   - title (scrolls when long), artist (truncates), and a line with the play state and
 //     the time.
 //
-// Knob, in the Flight Tracker's grammar. At rest the knob belongs to the shell (a turn opens
-// the app switcher) and a press takes it: the cover dims and four controls appear on it,
-// play/pause highlighted. Turn moves the highlight, press does it. On the volume control a
-// press enters volume mode (turn sets it in steps of five, sent once the knob stops; press
-// goes back to the controls). Six seconds without a touch gives the knob back, as does the
-// rock gesture from anywhere. The line under the artist names whatever is highlighted, so
-// the mode is never a guess.
+// Knob. Every detent reaches this screen (the app switcher is the rock gesture, not a turn),
+// so the turn is spent on what a music knob is for: at rest, turning sets the volume, 5% a
+// detent, shown on a dial over the cover that fades 1.5 s after the knob stops, and sent as
+// one `vol` command once it has. A press puts three controls on the cover (previous,
+// play/pause, next) with play/pause highlighted; turning then moves the highlight, a press
+// does it, and six seconds without a touch puts them away. The line under the artist names
+// whatever is highlighted or being changed, so the mode is never a guess.
 //
 // Memory: one cover, ART_PX^2 RGB565 (80 KB), in PSRAM, owned by this file from the moment
 // music::takeArt() hands it over until onExit() or the next cover releases it.
 #include "music_view.h"
 #include "music_client.h"
 #include "ponderer.h"
-#include "app_shell.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -60,10 +59,12 @@ constexpr uint32_t VOL_HOLD_MS = 2500;   // trust our own volume over polls this
 constexpr uint32_t TOAST_MS    = 2500;
 constexpr int      VOL_STEP    = 5;
 
-enum Mode { M_REST, M_CONTROL, M_VOLUME };
-enum Ctl { C_PREV, C_TOGGLE, C_NEXT, C_VOL, C_COUNT };
-constexpr int CTL_D     = 46;
-constexpr int CTL_PITCH = 50;
+enum Mode { M_REST, M_CONTROL };
+enum Ctl { C_PREV, C_TOGGLE, C_NEXT, C_COUNT };
+constexpr int CTL_D     = 52;
+constexpr int CTL_PITCH = 62;
+constexpr uint32_t VOL_SHOW_MS = 1500;   // the volume dial stays this long after the last detent
+constexpr uint32_t VOL_FADE_MS = 300;
 
 lv_obj_t *s_scr = nullptr;
 lv_obj_t *s_ring = nullptr;
@@ -75,6 +76,7 @@ lv_obj_t *s_artPh = nullptr;
 lv_obj_t *s_scrim = nullptr;
 lv_obj_t *s_ctl[C_COUNT] = {};
 lv_obj_t *s_ctlIcon[C_COUNT] = {};
+lv_obj_t *s_volBox = nullptr;   // scrim + dial + number, faded as one
 lv_obj_t *s_volArc = nullptr;
 lv_obj_t *s_volNum = nullptr;
 lv_obj_t *s_volIcon = nullptr;
@@ -99,6 +101,9 @@ int        s_volTarget = 0;
 bool       s_volDirty = false;
 uint32_t   s_volDirtyAt = 0;
 uint32_t   s_volHoldUntil = 0;
+bool       s_volShown = false;
+bool       s_volFading = false;
+uint32_t   s_volUntil = 0;
 const char *s_toast = nullptr;
 uint32_t   s_toastUntil = 0;
 char       s_lastLine[96] = "";
@@ -195,7 +200,6 @@ void rebase() {
     s_rxTick = now();
 }
 
-int max_sel() { return s_now.canVolume ? C_VOL : C_NEXT; }
 
 void toast(const char *t) {
     s_toast = t;
@@ -210,12 +214,47 @@ void flush_volume() {
 }
 
 void set_mode(Mode m) {
-    if (m == M_REST) flush_volume();
     if (m != M_REST && s_mode == M_REST) s_sel = C_TOGGLE;
     s_mode = m;
-    app_shell::setCaptured(m != M_REST);
     s_lastInput = now();
 }
+
+// ---- the volume dial -------------------------------------------------------------------
+
+void vol_opa_cb(void *o, int32_t v) { lv_obj_set_style_opa((lv_obj_t *)o, (lv_opa_t)v, 0); }
+void vol_faded_cb(lv_anim_t *) {
+    lv_obj_add_flag(s_volBox, LV_OBJ_FLAG_HIDDEN);
+    s_volShown = s_volFading = false;
+}
+
+void vol_hide_now() {
+    lv_anim_del(s_volBox, vol_opa_cb);
+    lv_obj_add_flag(s_volBox, LV_OBJ_FLAG_HIDDEN);
+    s_volShown = s_volFading = false;
+}
+
+void vol_show() {
+    lv_anim_del(s_volBox, vol_opa_cb);
+    lv_obj_set_style_opa(s_volBox, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(s_volBox, LV_OBJ_FLAG_HIDDEN);
+    s_volShown = true;
+    s_volFading = false;
+    s_volUntil = now() + VOL_SHOW_MS;
+}
+
+void vol_fade() {
+    s_volFading = true;
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, s_volBox);
+    lv_anim_set_exec_cb(&a, vol_opa_cb);
+    lv_anim_set_values(&a, LV_OPA_COVER, LV_OPA_TRANSP);
+    lv_anim_set_time(&a, VOL_FADE_MS);
+    lv_anim_set_ready_cb(&a, vol_faded_cb);
+    lv_anim_start(&a);
+}
+
+bool vol_visible() { return s_volShown && !s_volFading; }
 
 // ---- drawing -------------------------------------------------------------------------
 
@@ -236,15 +275,18 @@ void render_line() {
     if (s_toast && before(now(), s_toastUntil)) {
         snprintf(buf, sizeof(buf), "%s", s_toast);
         col = COL_WARN;
-    } else if (s_mode == M_VOLUME) {
-        snprintf(buf, sizeof(buf), "Turn to set, press when done");
-        col = COL_TEXT;
     } else if (s_mode == M_CONTROL) {
-        static const char *names[C_COUNT] = { "Previous", "", "Next", "Volume" };
+        static const char *names[C_COUNT] = { "Previous", "", "Next" };
         if (s_sel == C_TOGGLE) snprintf(buf, sizeof(buf), "%s", s_now.playing ? "Pause" : "Play");
-        else if (s_sel == C_VOL && s_now.volume >= 0) snprintf(buf, sizeof(buf), "Volume %d%%", s_now.volume);
         else snprintf(buf, sizeof(buf), "%s", names[s_sel]);
         col = COL_TEXT;
+    } else if (vol_visible()) {
+        if (s_now.canVolume) {
+            snprintf(buf, sizeof(buf), "Volume %d%%", s_now.volume < 0 ? 0 : s_now.volume);
+            col = COL_TEXT;
+        } else {
+            snprintf(buf, sizeof(buf), "Volume is fixed on this device");
+        }
     } else {
         fmt_time(a, sizeof(a), progress_now());
         fmt_time(b, sizeof(b), s_now.durationMs);
@@ -263,30 +305,29 @@ void render_line() {
 }
 
 void render_controls() {
-    const bool ctl = s_mode == M_CONTROL, vol = s_mode == M_VOLUME;
-    show(s_scrim, ctl || vol);
-    lv_obj_set_style_bg_opa(s_scrim, vol ? 215 : 165, 0);   // the number needs a quieter ground
+    const bool ctl = s_mode == M_CONTROL;
+    show(s_scrim, ctl);
     for (int i = 0; i < C_COUNT; ++i) {
         show(s_ctl[i], ctl);
         const bool on = ctl && i == s_sel;
-        const bool dead = i == C_VOL && !s_now.canVolume;
         lv_obj_set_style_bg_color(s_ctl[i], lv_color_hex(on ? COL_TEXT : 0x000000), 0);
         lv_obj_set_style_bg_opa(s_ctl[i], on ? LV_OPA_COVER : LV_OPA_40, 0);
         lv_obj_set_style_border_opa(s_ctl[i], on ? LV_OPA_TRANSP : LV_OPA_40, 0);
-        lv_obj_set_style_text_color(s_ctlIcon[i],
-            lv_color_hex(on ? 0x000000 : dead ? COL_FAINT : COL_TEXT), 0);
+        lv_obj_set_style_text_color(s_ctlIcon[i], lv_color_hex(on ? 0x000000 : COL_TEXT), 0);
     }
     set_text(s_ctlIcon[C_TOGGLE], s_now.playing ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
-    show(s_volArc, vol);
-    show(s_volNum, vol);
-    show(s_volIcon, vol);
-    if (vol) {
-        const int v = s_now.volume < 0 ? 0 : s_now.volume;
+    if (s_volShown) {
+        const bool known = s_now.volume >= 0;
+        const int v = known ? s_now.volume : 0;
         lv_arc_set_value(s_volArc, v);
+        lv_obj_set_style_arc_color(s_volArc, lv_color_hex(s_now.canVolume ? COL_PLAY : COL_PAUSED),
+                                   LV_PART_INDICATOR);
+        lv_obj_set_style_text_color(s_volNum, lv_color_hex(s_now.canVolume ? COL_TEXT : COL_DIM), 0);
         char buf[8];
-        snprintf(buf, sizeof(buf), "%d", v);
+        snprintf(buf, sizeof(buf), known ? "%d" : "--", v);
         set_text(s_volNum, buf);
-        set_text(s_volIcon, v == 0 ? LV_SYMBOL_MUTE : v < 50 ? LV_SYMBOL_VOLUME_MID : LV_SYMBOL_VOLUME_MAX);
+        set_text(s_volIcon, !s_now.canVolume ? LV_SYMBOL_CLOSE : v == 0 ? LV_SYMBOL_MUTE
+                            : v < 50 ? LV_SYMBOL_VOLUME_MID : LV_SYMBOL_VOLUME_MAX);
     }
 }
 
@@ -391,11 +432,13 @@ void ui_apply() {
         const bool stale = n.cmdSeq < s_localSeq && n.status == music::ST_ACTIVE &&
                            s_now.status == music::ST_ACTIVE;
         if (!stale) {
-            if (s_mode == M_VOLUME || before(now(), s_volHoldUntil)) n.volume = s_now.volume;
+            if (s_volShown || s_volDirty || before(now(), s_volHoldUntil)) n.volume = s_now.volume;
             s_now = n;
             s_rxTick = now();
-            if (s_now.status != music::ST_ACTIVE && s_mode != M_REST) set_mode(M_REST);
-            if (s_sel > max_sel()) s_sel = max_sel();
+            if (s_now.status != music::ST_ACTIVE) {
+                if (s_mode != M_REST) set_mode(M_REST);
+                if (s_volShown) vol_hide_now();
+            }
         }
     }
     take_art();
@@ -406,6 +449,10 @@ void ui_apply() {
 void tick_cb(lv_timer_t *) {
     if (!s_entered) return;
     if (s_volDirty && !before(now(), s_volDirtyAt + VOL_SEND_MS)) flush_volume();
+    if (s_volShown && !s_volFading && !before(now(), s_volUntil)) {
+        vol_fade();
+        s_lastLine[0] = 0;   // the line goes back to the time as the dial fades
+    }
     if (s_mode != M_REST && !before(now(), s_lastInput + IDLE_MS)) {
         set_mode(M_REST);
         render();
@@ -474,24 +521,30 @@ void init() {
     lv_obj_set_style_bg_opa(s_scrim, 165, 0);
     lv_obj_add_flag(s_scrim, LV_OBJ_FLAG_HIDDEN);
 
-    static const char *icons[C_COUNT] = { LV_SYMBOL_PREV, LV_SYMBOL_PLAY, LV_SYMBOL_NEXT, LV_SYMBOL_VOLUME_MAX };
+    static const char *icons[C_COUNT] = { LV_SYMBOL_PREV, LV_SYMBOL_PLAY, LV_SYMBOL_NEXT };
     for (int i = 0; i < C_COUNT; ++i) {
         lv_obj_t *c = blank(s_artBox);
         lv_obj_set_size(c, CTL_D, CTL_D);
-        lv_obj_set_pos(c, ART / 2 + (int)((i - 1.5f) * CTL_PITCH) - CTL_D / 2, ART / 2 - CTL_D / 2);
+        lv_obj_set_pos(c, ART / 2 + (i - 1) * CTL_PITCH - CTL_D / 2, ART / 2 - CTL_D / 2);
         lv_obj_set_style_radius(c, LV_RADIUS_CIRCLE, 0);
         lv_obj_set_style_border_color(c, lv_color_hex(COL_TEXT), 0);
         lv_obj_set_style_border_width(c, 1, 0);
         lv_obj_add_flag(c, LV_OBJ_FLAG_HIDDEN);
         s_ctl[i] = c;
         lv_obj_t *ic = lv_label_create(c);
-        lv_obj_set_style_text_font(ic, &lv_font_montserrat_18, 0);
+        lv_obj_set_style_text_font(ic, &lv_font_montserrat_20, 0);
         lv_label_set_text(ic, icons[i]);
         lv_obj_center(ic);
         s_ctlIcon[i] = ic;
     }
 
-    s_volArc = lv_arc_create(s_artBox);
+    s_volBox = blank(s_artBox);
+    lv_obj_set_size(s_volBox, ART, ART);
+    lv_obj_set_style_bg_color(s_volBox, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(s_volBox, 215, 0);   // the number needs a quieter ground
+    lv_obj_add_flag(s_volBox, LV_OBJ_FLAG_HIDDEN);
+
+    s_volArc = lv_arc_create(s_volBox);
     lv_obj_remove_style_all(s_volArc);
     lv_obj_clear_flag(s_volArc, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_size(s_volArc, 150, 150);
@@ -505,21 +558,18 @@ void init() {
     lv_obj_set_style_arc_width(s_volArc, 8, LV_PART_INDICATOR);
     lv_obj_set_style_arc_color(s_volArc, lv_color_hex(COL_PLAY), LV_PART_INDICATOR);
     lv_obj_set_style_arc_rounded(s_volArc, true, LV_PART_INDICATOR);
-    lv_obj_add_flag(s_volArc, LV_OBJ_FLAG_HIDDEN);
 
-    s_volNum = lv_label_create(s_artBox);
+    s_volNum = lv_label_create(s_volBox);
     lv_obj_set_style_text_font(s_volNum, &lv_font_montserrat_40, 0);
     lv_obj_set_style_text_color(s_volNum, lv_color_hex(COL_TEXT), 0);
     lv_label_set_text(s_volNum, "");
     lv_obj_align(s_volNum, LV_ALIGN_CENTER, 0, -4);
-    lv_obj_add_flag(s_volNum, LV_OBJ_FLAG_HIDDEN);
 
-    s_volIcon = lv_label_create(s_artBox);
+    s_volIcon = lv_label_create(s_volBox);
     lv_obj_set_style_text_font(s_volIcon, &lv_font_montserrat_18, 0);
     lv_obj_set_style_text_color(s_volIcon, lv_color_hex(COL_DIM), 0);
     lv_label_set_text(s_volIcon, "");
     lv_obj_align(s_volIcon, LV_ALIGN_CENTER, 0, 58);
-    lv_obj_add_flag(s_volIcon, LV_OBJ_FLAG_HIDDEN);
 
     s_title = label(s_body, &lv_font_montserrat_24, COL_TEXT, MID, TITLE_Y, TITLE_W);
     lv_obj_set_style_anim_speed(s_title, 30, 0);
@@ -562,7 +612,9 @@ void onEnter() {
 }
 
 void onExit() {
-    if (s_mode != M_REST) set_mode(M_REST);   // sends a volume change still in the debounce
+    flush_volume();   // a change still in the debounce is something the person asked for
+    s_mode = M_REST;
+    vol_hide_now();
     s_entered = false;
     music::setShowing(false);
     drop_art();
@@ -574,11 +626,10 @@ void onPress() {
         return;
     }
     s_lastInput = now();
-    switch (s_mode) {
-    case M_REST:
+    if (s_mode == M_REST) {
+        if (s_volShown) { flush_volume(); vol_hide_now(); }
         set_mode(M_CONTROL);
-        break;
-    case M_CONTROL:
+    } else {
         switch (s_sel) {
         case C_PREV: s_localSeq = music::queue(music::CMD_PREV); break;
         case C_NEXT: s_localSeq = music::queue(music::CMD_NEXT); break;
@@ -587,29 +638,28 @@ void onPress() {
             rebase();
             s_now.playing = !s_now.playing;
             break;
-        case C_VOL:
-            if (!s_now.canVolume) break;
-            if (s_now.volume < 0) s_now.volume = 50;
-            s_volTarget = s_now.volume;
-            set_mode(M_VOLUME);
-            break;
         }
-        break;
-    case M_VOLUME:
-        set_mode(M_CONTROL);
-        break;
     }
     render();
 }
 
 void onTurn(int delta) {
-    if (!active() || s_mode == M_REST) return;
-    s_lastInput = now();
+    if (!active()) return;
     if (s_mode == M_CONTROL) {
+        s_lastInput = now();
         s_sel += delta;
         if (s_sel < 0) s_sel = 0;
-        if (s_sel > max_sel()) s_sel = max_sel();
-    } else {
+        if (s_sel > C_NEXT) s_sel = C_NEXT;
+        render();
+        return;
+    }
+    // At rest: volume. The dial shows either way, so a turn on a device that will not
+    // take a volume says so rather than doing nothing.
+    const bool fresh = !s_volShown || s_volFading;
+    vol_show();
+    s_lastLine[0] = 0;
+    if (s_now.canVolume && s_now.volume >= 0) {
+        if (fresh && !s_volDirty) s_volTarget = s_now.volume;
         s_volTarget += delta * VOL_STEP;
         if (s_volTarget < 0) s_volTarget = 0;
         if (s_volTarget > 100) s_volTarget = 100;
