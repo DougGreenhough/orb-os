@@ -61,7 +61,13 @@ constexpr float RESTLESS = 0.5f;          // the page's default
 constexpr float R0 = 0.17f;               // electrode radius, a fraction of the glass
 constexpr float POWER_TOP = 0.85f;        // engine power at 100%: keeps MAXF headroom to fork
 constexpr int   POWER_STEP = 5;           // % per detent
-constexpr uint32_t FRAME_MS = 33;         // ask for 30; the log says what it got
+// Frame pacing. Start by asking for 30, then, every log period, ask for what the device
+// can actually hold: twice the measured work (the flush over QSPI costs about as much again,
+// as the clock's sweep found), between 33 and 100 ms. The Flight Tracker learned that a
+// rate the renderer cannot meet arrives as uneven frames, which reads worse than a lower
+// even one; the discharge advances by real elapsed time either way.
+constexpr uint32_t FRAME_MS = 33;
+constexpr uint32_t FRAME_MS_MAX = 100;
 constexpr uint32_t IDLE_MS = 5000;        // captured knob lets go after this (radar's SELECT_IDLE_MS)
 constexpr uint32_t LOG_MS = 5000;
 constexpr int BANDS = 12;
@@ -195,9 +201,14 @@ void tick_cb(lv_timer_t *) {
     if (ms - s_logAt >= LOG_MS) {
         const float secs = (ms - s_logAt) / 1000.0f;
         const float n = s_frames ? (float)s_frames : 1.0f;
-        PLOG("[plasma] %.1f fps, %d segs, %d channels, power %d%% | sim %.1f ms, render %.1f ms, draw %.1f ms per frame\n",
+        const float work = (s_simUs + s_rasterUs + s_drawUs) / n / 1000.0f;
+        uint32_t period = (uint32_t)(work * 2.0f + 0.5f);
+        if (period < FRAME_MS) period = FRAME_MS;
+        if (period > FRAME_MS_MAX) period = FRAME_MS_MAX;
+        if (s_timer) lv_timer_set_period(s_timer, period);
+        PLOG("[plasma] %.1f fps, %d segs, %d channels, power %d%% | sim %.1f ms, render %.1f ms, draw %.1f ms per frame -> asking every %u ms\n",
              s_frames / secs, (int)(s_segs / n), plasma::live_count(*s_eng), s_power,
-             s_simUs / n / 1000.0f, s_rasterUs / n / 1000.0f, s_drawUs / n / 1000.0f);
+             s_simUs / n / 1000.0f, s_rasterUs / n / 1000.0f, s_drawUs / n / 1000.0f, (unsigned)period);
         s_logAt = ms;
         s_frames = s_simUs = s_rasterUs = s_drawUs = s_segs = 0;
     }

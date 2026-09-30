@@ -43,6 +43,10 @@ constexpr float IREF = 0.09f;
 constexpr float GAIN = 1.35f;
 constexpr float BLOOM = 0.7f;
 constexpr float BROAD = 1.9f;
+// The 12.5-unit glow round every channel: drawn as a stroke (true), or handed to the bloom
+// grid (false), which roughly halves the pixels the rasteriser touches. The first knob to
+// turn if frames run long; the difference is a slightly softer halo close to each line.
+constexpr bool  GLOW_SHARP = false;
 constexpr int   NL = 40;                     // entries in a stroke's profile table
 
 // Colour along a channel: the body runs cool, the end warm (page: BODY_SHIFT, END_SHIFT).
@@ -177,6 +181,8 @@ void seg(Render &R, float x0, float y0, float x1, float y1, const Lut &L, bool c
     if (ya < 0) ya = 0;
     if (yb > RW - 1) yb = RW - 1;
     const float iey = fabsf(ey) > 1e-4f ? 1.0f / ey : 0.0f;
+    const float iex = fabsf(ex) > 1e-4f ? 1.0f / ex : 0.0f;
+    const float bandK = iey != 0 ? rm * sqrtf(len2) * fabsf(iey) : 0.0f;
     for (int y = ya; y <= yb; ++y) {
         const float py = y + 0.5f;
         float ta = 0, tb = 1;
@@ -186,7 +192,22 @@ void seg(Render &R, float x0, float y0, float x1, float y1, const Lut &L, bool c
         }
         float xa = x0 + ex * ta, xb = x0 + ex * tb;
         if (xa > xb) { const float t = xa; xa = xb; xb = t; }
-        int xs = (int)floorf(xa - rm), xe = (int)ceilf(xb + rm);
+        xa -= rm; xb += rm;
+        if (bandK > 0) {
+            // and within rm of the line itself: a steep stroke's row is only this wide
+            const float xc = x0 + ex * (py - y0) * iey;
+            if (xc - bandK > xa) xa = xc - bandK;
+            if (xc + bandK < xb) xb = xc + bandK;
+        }
+        if (!cap0 && !cap1 && iex != 0) {
+            // and between the two perpendiculars that end it (joints are cut there)
+            const float dyy = (py - y0) * ey;
+            float u0 = x0 - dyy * iex, u1 = x0 + (len2 - dyy) * iex;
+            if (u0 > u1) { const float t = u0; u0 = u1; u1 = t; }
+            if (u0 - 0.5f > xa) xa = u0 - 0.5f;
+            if (u1 + 0.5f < xb) xb = u1 + 0.5f;
+        }
+        int xs = (int)floorf(xa), xe = (int)ceilf(xb);
         if (xs < R.chordL[y]) xs = R.chordL[y];
         if (xe > R.chordR[y]) xe = R.chordR[y];
         if (xs > xe) continue;
@@ -297,14 +318,19 @@ void channel(Render &R, const Engine &e, const Fil &f) {
                 if (!built || u > WARM_FROM - 0.5f / (NN - 1)) {
                     // the four passes: haze (bloom only), glow, body, core
                     const Pass p[3] = {
-                        { 12.5f * wf, fminf(1.0f, 0.075f * al), shade(base, u, 100, 60) },
                         { 5.2f * wf, fminf(1.0f, 0.200f * al), shade(base, u, 100, 72) },
                         { 2.0f * wf, fminf(1.0f, 0.520f * al), shade(base, u, 94, 90) },
+                        { 12.5f * wf, fminf(1.0f, 0.075f * al), shade(base, u, 100, 60) },
                     };
-                    build_lut(L, p, 3);
+                    build_lut(L, p, GLOW_SHARP ? 3 : 2);
                     const RGB hc = shade(base, u, 100, 50);
                     const float hs = 25.0f * wf * fminf(1.0f, 0.03f * al) * 255.0f;
                     haze[0] = hc.r * hs + L.e[0] * BLOOM; haze[1] = hc.g * hs + L.e[1] * BLOOM; haze[2] = hc.b * hs + L.e[2] * BLOOM;
+                    if (!GLOW_SHARP) {
+                        // the glow pass goes to the bloom grid whole, at full strength
+                        const float gs = p[2].w * p[2].a * 255.0f * GAIN;
+                        haze[0] += p[2].c.r * gs; haze[1] += p[2].c.g * gs; haze[2] += p[2].c.b * gs;
+                    }
                     built = true;
                 }
                 // Catmull-Rom midpoint, from the neighbours either side
