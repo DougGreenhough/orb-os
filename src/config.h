@@ -35,6 +35,12 @@
 // device pretending it never understood them.
 #define APPS_LAUNCH_ONE 1
 
+// The Forecast screen (forecast_view.cpp): current conditions and four days, between the
+// Flight Tracker and News. Not part of upstream; 0 takes it off the roster entirely.
+#ifndef APP_FORECAST_ENABLED
+#define APP_FORECAST_ENABLED 1
+#endif
+
 // ---------- Home location ----------
 // A PLACEHOLDER, and deliberately not a place. The device has exactly two location inputs
 // (UX-025): the network it joins, looked up at the end of WiFi setup and retried on any

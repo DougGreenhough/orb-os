@@ -193,6 +193,7 @@ static const char *dist_unit(void) { return s_units == 0 ? "nm" : (s_units == 2 
 // Automatic mode, the home location — see host_wx_units_set()/is_imperial_region().
 static bool s_wxImperial = false;
 void ui_set_wx_units(bool imperial) { s_wxImperial = imperial; }
+bool ui_wx_imperial() { return s_wxImperial; }
 
 static float weather_temp(float c) { return s_wxImperial ? c * 1.8f + 32.0f : c; }
 static const char *weather_temp_unit(void) { return s_wxImperial ? "F" : "C"; }

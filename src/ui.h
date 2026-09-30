@@ -33,7 +33,8 @@ void ui_apply_theme(int theme);  // repaint the HUD chrome to match the active r
 // range label is fed by radar::update() from the settings struct, so nothing here needs to
 // know about it. ui_set_netinfo() moved to settingsview::setNetInfo().
 void ui_set_units(int preset);               // 0 = Aviation (ft,kt,km) · 1 = Metric (m,km/h,km) · 2 = Imperial (ft,mph,mi)
-void ui_set_wx_units(bool imperial);         // Weather app only, independent of the aviation preset above
+void ui_set_wx_units(bool imperial);
+bool ui_wx_imperial();                        // what the setter above last said, for the Forecast screen
 void ui_set_wx_zoom(int tier);               // 0 = 50mi · 1 = 100mi — Weather map display range
 void ui_set_large_text(bool on);             // accessibility: bigger fonts everywhere. Call BEFORE ui_create()
 void ui_set_weather_forecast(bool forecast); // false = WX radar, true = 3-day forecast

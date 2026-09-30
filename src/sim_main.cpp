@@ -23,6 +23,8 @@
 #include "ui.h"
 #include "route.h"
 #include "weather.h"
+#include "weather_client.h"
+#include "forecast_view.h"
 #include "wx_radar.h"
 #include "wx_radar_client.h"
 #include "cloud_image.h"
@@ -650,6 +652,19 @@ static void sim_register_apps(lv_obj_t *radarScreen) {
 #else
     (void)survScreen;   // built above; not on launch one's roster (CUT-01)
 #endif
+#if APP_FORECAST_ENABLED
+    // Live Open-Meteo for wherever the simulator thinks home is (ORBLAT/ORBLON), fetched
+    // once here for the same reason News is below. If it fails, the mock forecast stored
+    // at start-up stays, and the log says so.
+    {
+        WeatherSnapshot live;
+        if (weather_fetch(g_set.homeLat, g_set.homeLon, live)) weather_store(live);
+        else printf("[sim] forecast: live fetch failed, showing the MOCK forecast\n");
+    }
+    forecastview::init();
+    app_shell::add(forecastview::screen(), "Forecast", nullptr, nullptr, false,
+                   forecastview::onEnter, forecastview::onExit, false);
+#endif
     // init() FIRST, and this is not a style preference.
     //
     // screen() returns null until init() has built it, and add() quietly rejects a null
@@ -813,6 +828,10 @@ int main(int argc, char **argv) {
     // it appears there because rows more than a quarter turn away were CLAMPED onto the top
     // of the dial instead of being dropped, so five of them drew on the same pixel.
     const char *setShot    = (argc >= 3 && strcmp(argv[1], "--settingsshot") == 0) ? argv[2] : NULL;
+    // --forecastshot <prefix>: the Forecast screen under a set of made-up snapshots, one
+    // per icon kind plus Fahrenheit and the no-data state, because wherever the simulator
+    // lives the live weather only ever shows one of them.
+    const char *fcShot     = (argc >= 3 && strcmp(argv[1], "--forecastshot") == 0) ? argv[2] : NULL;
     // --newsshot is headless but drives the KNOB, so it needs the full app lineup that only
     // interactive mode registers. It is the one capture that walks the shell rather than
     // putting a single screen up directly.
@@ -984,6 +1003,56 @@ int main(int argc, char **argv) {
     // active SD theme applied and no stock-skin override, then exit. This is what makes
     // workflow rule R3 ("sim before silicon") actually possible — before it, checking a
     // theme change meant flashing hardware and photographing the screen.
+#if APP_FORECAST_ENABLED
+    if (interactive && fcShot) {
+        for (int i = 0; i < 600; ++i) { lv_timer_handler(); SDL_Delay(2); }
+        for (uint32_t i = 0; i < lv_obj_get_child_cnt(lv_layer_top()); ++i)
+            lv_obj_add_flag(lv_obj_get_child(lv_layer_top(), i), LV_OBJ_FLAG_HIDDEN);
+        app_shell::selectApp(app_shell::APP_FORECAST);
+        int ow, oh; SDL_GetRendererOutputSize(s_ren, &ow, &oh);
+        struct Case { const char *name; int now; int days[4]; bool imperial; bool empty; };
+        const Case cases[] = {
+            { "clear-partly-cloud-fog", 0,  { 2, 3, 45, 0 },   false, false },
+            { "rain-drizzle-showers",   63, { 53, 81, 61, 3 }, false, false },
+            { "snow-storm",             73, { 85, 95, 71, 1 }, false, false },
+            { "fahrenheit",             95, { 95, 2, 0, 63 },  true,  false },
+            { "empty",                  0,  { 0, 0, 0, 0 },    false, true  },
+        };
+        for (const Case &c : cases) {
+            WeatherSnapshot w = {};
+            if (!c.empty) {
+                w.valid = true;
+                snprintf(w.updated, sizeof(w.updated), "14:00");
+                w.code = c.now; w.tempC = -3; w.feelsC = -8; w.humidity = 88;
+                w.windKmh = 34; w.windDeg = 250; w.dayCount = 4;
+                const char *dates[] = { "2026-12-01", "2026-12-02", "2026-12-03", "2026-12-04" };
+                for (int d = 0; d < 4; ++d) {
+                    snprintf(w.days[d].date, sizeof(w.days[d].date), "%s", dates[d]);
+                    w.days[d].code = c.days[d];
+                    w.days[d].tempMaxC = 4 + d * 3; w.days[d].tempMinC = -12 + d * 2;
+                    w.days[d].rainChance = (d * 35) % 100;
+                }
+            }
+            weather_store(w);
+            ui_set_wx_units(c.imperial);
+            forecastview::refresh();
+            for (int i = 0; i < 100; ++i) { lv_timer_handler(); SDL_Delay(2); }
+            lv_refr_now(NULL);
+            SDL_RenderClear(s_ren);
+            SDL_RenderCopy(s_ren, s_tex, NULL, NULL);
+            if (SDL_Surface *surf = SDL_CreateRGBSurfaceWithFormat(0, ow, oh, 32, SDL_PIXELFORMAT_ARGB8888)) {
+                SDL_RenderReadPixels(s_ren, NULL, SDL_PIXELFORMAT_ARGB8888, surf->pixels, surf->pitch);
+                char path[300];
+                snprintf(path, sizeof(path), "%s-%s.bmp", fcShot, c.name);
+                SDL_SaveBMP(surf, path);
+                SDL_FreeSurface(surf);
+                printf("[sim] forecastshot: %s\n", path);
+            }
+        }
+        SDL_Quit();
+        return 0;
+    }
+#endif
     if (interactive && themeShot) {
         // The boot splash holds ~2s then fades over 600ms, and it lives on lv_layer_top
         // so it covers whatever app is selected. Wait it out before capturing anything.

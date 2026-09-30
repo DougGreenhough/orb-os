@@ -57,6 +57,7 @@
 #include "custom_apps.h"              // CUSTOM_APP_* — which apps a theme flash includes in the menu
 #include "spycam_view.h"             // Spy Cam: looping "security camera" flip-book
 #include "intel_view.h"
+#include "forecast_view.h"
 #include "ticker_view.h"
 #include "ticker.h"              // world headlines, read through the gateway
 #include <set>                       // audio: track which contacts are in range
@@ -2702,6 +2703,12 @@ void setup() {
     // were written as bare integers and moving anything would have pointed the jumps at
     // the wrong screen. They name app_shell::Slot now, so the menu can be ordered the way it
     // should read: Settings last, after everything it configures.
+#if APP_FORECAST_ENABLED
+    forecastview::init();
+    psram_mark("after forecastview");
+    app_shell::add(forecastview::screen(), "Forecast", nullptr, nullptr, false,
+                   forecastview::onEnter, forecastview::onExit, false);
+#endif
     intelview::init();
     psram_mark("after intelview");
     app_shell::add(intelview::screen(), theme_style::names().headlines,
@@ -3331,6 +3338,9 @@ void loop() {
     if (g_weatherDirty) {
         g_weatherDirty = false;
         ui_on_data_updated();
+#if APP_FORECAST_ENABLED
+        forecastview::refresh();
+#endif
     }
     // Headlines arrived on core 0; the labels are LVGL objects and may only be written
     // here. Cheap enough to do whether or not the screen is showing: it is five short

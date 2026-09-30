@@ -53,6 +53,9 @@ namespace app_shell {
         APP_WEATHER,
         APP_SURVEILLANCE,
 #endif
+#if APP_FORECAST_ENABLED
+        APP_FORECAST,
+#endif
         APP_INTEL,
 #if !APPS_LAUNCH_ONE
         APP_TICKER,
