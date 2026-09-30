@@ -18,10 +18,13 @@
 // pixels over QSPI than the square would. LVGL does not merge them (their union is never
 // smaller than their sum).
 //
-// Knob. The Flight Tracker's old grammar: a press takes the knob, turning then sets Power
-// (the drive voltage; how many filaments there are follows from it), and a press or five
-// idle seconds gives it back. The readout is an arc of light on the inside of the glass
-// along the bottom, with the number under it.
+// Knob. A turn sets Power (the drive voltage; how many filaments there are follows from
+// it), straight away, with no press to arm it: the firmware's grammar, where every turn
+// goes to the app and the rock is what opens the switcher. The readout, an arc of light on
+// the inside of the glass along the bottom with the number under it, shows while turning
+// and fades out two seconds after the last detent. A press just shows it, so the level can
+// be read without changing it. Power is kept in NVS ("capsuleradar"/"plasma_pwr"), written
+// once the readout has faded rather than on every detent; the simulator keeps it in /tmp.
 //
 // Memory. Everything is taken on enter and given back on exit, all of it in PSRAM:
 // engine 70 KB, accumulator 163 KB, frame 109 KB, bloom 2 x 43 KB, electrode and
@@ -29,7 +32,6 @@
 #include "plasma_view.h"
 #include "plasma_engine.h"
 #include "plasma_render.h"
-#include "app_shell.h"
 #include "display.h"      // orb_screen_covered()
 #include <math.h>
 #include <string.h>
@@ -37,6 +39,7 @@
 #include <stdlib.h>
 #if defined(ESP_PLATFORM)
 #include <Arduino.h>
+#include <Preferences.h>
 #include <esp_heap_caps.h>
 #include <esp_timer.h>
 static void *ps_alloc(size_t n) { return heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT); }
@@ -69,7 +72,8 @@ constexpr int   POWER_STEP = 5;           // % per detent
 // even one; the discharge advances by real elapsed time either way.
 constexpr uint32_t FRAME_MS = 33;
 constexpr uint32_t FRAME_MS_MAX = 100;
-constexpr uint32_t IDLE_MS = 5000;        // captured knob lets go after this (radar's SELECT_IDLE_MS)
+constexpr uint32_t SHOW_MS = 2000;        // the readout stays this long after the last detent...
+constexpr uint32_t FADE_MS = 400;         // ...then fades over this
 constexpr uint32_t LOG_MS = 5000;
 constexpr int BANDS = 12;
 
@@ -82,8 +86,9 @@ plasma::Engine *s_eng = nullptr;
 plasma::Render s_ren = {};
 bool s_ready = false;
 
-int s_power = 55;                         // %, kept across visits (not across boots)
-bool s_captured = false;
+int s_power = 55;                         // %, loaded in init(), saved when the readout fades
+bool s_showing = false;
+bool s_dirty = false;                     // Power changed since it was last saved
 uint32_t s_activityMs = 0;
 uint32_t s_lastMs = 0;
 
@@ -156,24 +161,65 @@ void invalidate_disc() {
 
 // ---- the knob's readout ----------------------------------------------------------------
 
+// ---- Power, kept across reboots ---------------------------------------------------------
+
+#if !defined(ESP_PLATFORM)
+const char *SIM_POWER_FILE = "/tmp/orb_sim_plasma_power";
+#endif
+
+int load_power() {
+    int v = -1;
+#if defined(ESP_PLATFORM)
+    Preferences p;
+    if (p.begin("capsuleradar", true)) { v = p.getInt("plasma_pwr", -1); p.end(); }
+#else
+    if (FILE *f = fopen(SIM_POWER_FILE, "r")) { if (fscanf(f, "%d", &v) != 1) v = -1; fclose(f); }
+#endif
+    return (v >= 0 && v <= 100) ? v : 55;
+}
+
+void save_power() {
+    if (!s_dirty) return;
+    s_dirty = false;
+#if defined(ESP_PLATFORM)
+    Preferences p;
+    if (p.begin("capsuleradar", false)) { p.putInt("plasma_pwr", s_power); p.end(); }
+#else
+    if (FILE *f = fopen(SIM_POWER_FILE, "w")) { fprintf(f, "%d\n", s_power); fclose(f); }
+#endif
+}
+
+// ---- the knob's readout ----------------------------------------------------------------
+
 void show_readout() {
     if (!s_label) return;
     char b[24];
     snprintf(b, sizeof b, "POWER  %d", s_power);
     lv_label_set_text(s_label, b);
+    lv_obj_set_style_opa(s_label, LV_OPA_COVER, 0);
     lv_obj_clear_flag(s_label, LV_OBJ_FLAG_HIDDEN);
     s_ren.ring = s_power / 100.0f;
+    s_ren.ringA = 1;
+    s_showing = true;
+    s_activityMs = lv_tick_get();
 }
 
 void hide_readout() {
     if (s_label) lv_obj_add_flag(s_label, LV_OBJ_FLAG_HIDDEN);
     s_ren.ring = -1;
+    s_showing = false;
+    save_power();
 }
 
-void release() {
-    s_captured = false;
-    app_shell::setCaptured(false);
-    hide_readout();
+// Called every frame: hold, then fade, then hide.
+void fade_readout(uint32_t ms) {
+    if (!s_showing) return;
+    const uint32_t age = ms - s_activityMs;
+    if (age < SHOW_MS) return;
+    if (age >= SHOW_MS + FADE_MS) { hide_readout(); return; }
+    const float k = 1.0f - (float)(age - SHOW_MS) / FADE_MS;
+    s_ren.ringA = k;
+    if (s_label) lv_obj_set_style_opa(s_label, (lv_opa_t)(k * 255), 0);
 }
 
 // ---- the frame -------------------------------------------------------------------------
@@ -186,7 +232,7 @@ void tick_cb(lv_timer_t *) {
     if (dt > 0.05f) dt = 0.05f;           // a hitch is not a lurch
     if (dt <= 0) return;
 
-    if (s_captured && ms - s_activityMs >= IDLE_MS) release();
+    fade_readout(ms);
 
     const uint32_t t0 = now_us();
     plasma::step(*s_eng, dt, s_power / 100.0f * POWER_TOP, RESTLESS);
@@ -227,6 +273,7 @@ namespace plasmaview {
 
 void init() {
     if (s_scr) return;
+    s_power = load_power();
     for (int y = 0; y < SCREEN; ++y) {
         const float dy = y + 0.5f - SCREEN / 2.0f;
         const float h2 = (SCREEN / 2.0f) * (SCREEN / 2.0f) - dy * dy;
@@ -267,8 +314,6 @@ lv_obj_t *screen() { return s_scr; }
 
 void onEnter() {
     if (!s_scr) return;
-    s_captured = false;
-    app_shell::setCaptured(false);
     if (!s_ready) {
         s_eng = (plasma::Engine *)ps_alloc(sizeof(plasma::Engine));
         if (!s_eng || !plasma::render_alloc(s_ren, HUE, R0)) {
@@ -293,30 +338,26 @@ void onEnter() {
 
 void onExit() {
     if (s_timer) { lv_timer_del(s_timer); s_timer = nullptr; }
-    if (s_captured) release();
-    hide_readout();
+    hide_readout();   // and saves Power if it changed
     free_all();
     // nothing left to draw from: the next frame of this screen, if any, is black
     if (s_obj) lv_obj_invalidate(s_obj);
 }
 
-// Press: take the knob to set Power, or give it back.
+// Press: show the level without changing it. (A turn is what changes it.)
 void onPress() {
     if (!s_ready) return;
-    if (s_captured) { release(); return; }
-    s_captured = true;
-    app_shell::setCaptured(true);
-    s_activityMs = lv_tick_get();
     show_readout();
 }
 
-// A detent: Power, while the knob is ours. Uncaptured turns are the shell's business.
+// A detent: Power, at once, whenever this screen is up.
 void onTurn(int delta) {
-    if (!s_captured) return;
+    if (!s_ready) return;
+    const int was = s_power;
     s_power += delta * POWER_STEP;
     if (s_power < 0) s_power = 0;
     if (s_power > 100) s_power = 100;
-    s_activityMs = lv_tick_get();
+    if (s_power != was) s_dirty = true;
     show_readout();
 }
 

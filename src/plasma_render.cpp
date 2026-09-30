@@ -548,12 +548,13 @@ void electrode(Render &R) {
 // from the left as far as the level. Drawn as light rather than as an LVGL arc because it
 // is repainted every frame anyway, and here it costs a few dozen short strokes.
 void ring(Render &R) {
-    if (R.ring < 0) return;
+    if (R.ring < 0 || R.ringA <= 0) return;
+    const float k = R.ringA;
     const float rr = RL - 3.5f;
     const float a0 = 135.0f * 3.14159265f / 180.0f, span = 90.0f * 3.14159265f / 180.0f;
     const RGB on = shade(R.hue, 1, 100, 72), off = hsl(R.hue, 20, 70);
-    const Pass pOn[2] = { { 3.0f, 0.35f, on }, { 1.3f, 0.9f, shade(R.hue, 1, 90, 88) } };
-    const Pass pOff = { 1.2f, 0.22f, off };
+    const Pass pOn[2] = { { 3.0f, 0.35f * k, on }, { 1.3f, 0.9f * k, shade(R.hue, 1, 90, 88) } };
+    const Pass pOff = { 1.2f, 0.22f * k, off };
     Lut LOn, LOff;
     build_lut(LOn, pOn, 2);
     build_lut(LOff, &pOff, 1);
@@ -660,6 +661,7 @@ bool render_alloc(Render &R, float hue, float r0) {
     R.hue = hue;
     R.rng = 0x2545F491u;
     R.ring = -1;
+    R.ringA = 1;
     R.acc  = (uint8_t *)big_alloc((size_t)RW * RW * 3);
     R.out  = (uint16_t *)big_alloc((size_t)RW * RW * 2);
     R.glow = (float *)big_alloc((size_t)LG * LG * 3 * sizeof(float));
