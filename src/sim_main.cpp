@@ -1151,7 +1151,17 @@ int main(int argc, char **argv) {
 #endif
     s_win = SDL_CreateWindow("The Orb OS (sim)",
                              24, 44,
-                             reqW, reqH, SDL_WINDOW_ALLOW_HIGHDPI);
+                             reqW, reqH,
+#ifdef __EMSCRIPTEN__
+                             // The Orb has 466 real pixels; draw exactly those and let the page's CSS
+                             // scale the canvas. With ALLOW_HIGHDPI the canvas buffer follows the
+                             // devicePixelRatio at start-up, and when that changes afterwards (a window
+                             // dragged to another screen, a zoom) the picture came out magnified.
+                             0
+#else
+                             SDL_WINDOW_ALLOW_HIGHDPI
+#endif
+                             );
     s_ren = SDL_CreateRenderer(s_win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
     if (!s_win || !s_ren) {
         printf("[sim] window/renderer creation failed: %s\n", SDL_GetError());
