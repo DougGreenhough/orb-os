@@ -33,7 +33,7 @@ namespace {
     };
 
     constexpr int   MAX_APPS      = 12;   // was 8; this fork adds five
-    constexpr uint32_t ANIM_MS    = 250;   // slide duration between apps
+    constexpr uint32_t ANIM_MS    = 250;   // was the slide between apps; this fork fades instead (FADE_*_MS below)
 
     App  s_apps[MAX_APPS];
     int  s_count    = 0;
@@ -85,6 +85,7 @@ namespace {
 
     int next_visible(int from, int dir);   // forward decl — defined below, needed by show_overlay above it
     void load(int idx, bool animate, bool forward);   // same, needed by commit_current()
+    void fade_in();                                    // this fork, defined with load() below
 
     // The menu's background art is 466x466 and costs ~636 KB of PSRAM decoded, and the
     // glass layer another ~636 KB. Both used to be decoded once at boot and held for the
@@ -162,6 +163,13 @@ namespace {
         // while a menu without a backdrop is merely plain.
         menu_text::acquire();   // ~868 KB PSRAM, held only while the overlay is up
         overlay_art_acquire();
+        // This fork: say what the names are really drawn on, so a design made for a plate
+        // that is not there (no theme on the card) stays readable. See menu_text.h.
+        {
+            const lv_color32_t bg = { .full = lv_color_to32(app_theme::palette().bg) };
+            menu_text::set_backdrop(s_overlayPlate != nullptr,
+                                    ((uint32_t)bg.ch.red << 16) | ((uint32_t)bg.ch.green << 8) | bg.ch.blue);
+        }
         // A custom design draws current/prev/next itself (menu_text canvas); the stock
         // label stays hidden while that canvas exists. If it could not be allocated,
         // fall through to the plain label: an overlay with no text on it is worse than
@@ -181,7 +189,7 @@ namespace {
             // the same fix settings_view's wheel_layout already carries for its own
             // no-canvas branch.
             const theme_style::MenuText &mc = theme_style::menu().current;
-            lv_obj_set_style_text_color(s_overlayLabel, lv_color_hex(mc.color), 0);
+            lv_obj_set_style_text_color(s_overlayLabel, lv_color_hex(menu_text::readable(mc.color, true)), 0);
             lv_obj_set_style_text_opa(s_overlayLabel, (lv_opa_t)mc.opa, 0);
             lv_obj_set_style_text_font(s_overlayLabel, theme_font::menu_current(), 0);
             lv_obj_set_style_text_align(s_overlayLabel, LV_TEXT_ALIGN_CENTER, 0);
@@ -235,6 +243,7 @@ namespace {
         // onExit, the screen swap, capture state, and the incoming onEnter, so exactly
         // one app's artwork is decoded per selection rather than one per detent.
         load(s_browseIdx, false, true);
+        fade_in();   // this fork: the chosen app comes up out of black, like every other switch
         diag::log("enter %s", s_apps[s_cur].name);
     }
 
@@ -253,8 +262,78 @@ namespace {
         return from;
     }
 
+    // ---- fade through black (this fork) ------------------------------------------
+    // Moving between apps used to slide the new screen in. It now fades the old one to
+    // black, swaps at black, and fades the new one up: a black sheet on LVGL's system
+    // layer (above the switcher and everything else) whose opacity is animated.
+    //
+    // Swapping at black is also kinder to the apps than the slide was: the outgoing app's
+    // onExit (which frees its artwork) and the incoming one's onEnter (which decodes its
+    // own) both run where nobody can see them.
+    constexpr uint32_t FADE_OUT_MS = 160, FADE_IN_MS = 260;
+    enum FadePhase { FADE_IDLE, FADE_OUT, FADE_IN };
+    lv_obj_t *s_fade = nullptr;
+    FadePhase s_fadePhase = FADE_IDLE;
+    int       s_fadeTarget = -1;
+
+    void fade_set(void *obj, int32_t v) { lv_obj_set_style_bg_opa((lv_obj_t *)obj, (lv_opa_t)v, 0); }
+
+    lv_obj_t *fade_sheet() {
+        if (!s_fade) {
+            s_fade = lv_obj_create(lv_layer_sys());
+            lv_obj_remove_style_all(s_fade);
+            lv_obj_set_size(s_fade, SCREEN_W, SCREEN_H);
+            lv_obj_set_style_bg_color(s_fade, lv_color_black(), 0);
+            lv_obj_set_style_bg_opa(s_fade, LV_OPA_TRANSP, 0);
+            lv_obj_clear_flag(s_fade, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+        }
+        lv_obj_clear_flag(s_fade, LV_OBJ_FLAG_HIDDEN);
+        return s_fade;
+    }
+
+    void fade_run(int32_t from, int32_t to, uint32_t ms, lv_anim_ready_cb_t done) {
+        lv_anim_t a;
+        lv_anim_init(&a);
+        lv_anim_set_var(&a, fade_sheet());
+        lv_anim_set_exec_cb(&a, fade_set);
+        lv_anim_set_values(&a, from, to);
+        lv_anim_set_time(&a, ms);
+        lv_anim_set_ready_cb(&a, done);
+        lv_anim_start(&a);   // replaces any animation already running on the sheet
+    }
+
+    void fade_in_done(lv_anim_t *) {
+        s_fadePhase = FADE_IDLE;
+        if (s_fade) lv_obj_add_flag(s_fade, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    void fade_in() {
+        s_fadePhase = FADE_IN;
+        fade_run(LV_OPA_COVER, LV_OPA_TRANSP, FADE_IN_MS, fade_in_done);
+    }
+
+    void fade_at_black(lv_anim_t *) {
+        load(s_fadeTarget, false, true);   // the real switch, unseen
+        fade_in();
+    }
+
+    // Fade to black, switch to `idx`, fade back. A second call while one is under way
+    // retargets it (the latest wins) rather than queueing.
+    void fade_to(int idx) {
+        if (idx < 0 || idx >= s_count || !s_apps[idx].screen) return;
+        s_fadeTarget = idx;
+        if (s_fadePhase == FADE_OUT) return;   // already on its way to black
+        const int32_t from = (s_fadePhase == FADE_IN && s_fade) ? lv_obj_get_style_bg_opa(s_fade, 0) : LV_OPA_TRANSP;
+        s_fadePhase = FADE_OUT;
+        fade_run(from, LV_OPA_COVER, FADE_OUT_MS, fade_at_black);
+    }
+
+    // The app a fade is heading for, so next()/prev() during one step on from there.
+    int fade_base() { return s_fadePhase == FADE_OUT ? s_fadeTarget : s_cur; }
+
     void load(int idx, bool animate, bool forward) {
         if (idx < 0 || idx >= s_count || !s_apps[idx].screen) return;
+        if (animate) { (void)forward; fade_to(idx); return; }
         // Tell the outgoing app it's leaving before we swap, so it can free whatever it
         // decoded. Both this and onEnter now fire ONLY on a real app change (boot, a
         // committed switcher selection, or next()/prev()), never per switcher detent.
@@ -262,13 +341,7 @@ namespace {
         s_cur = idx;
         s_captured = s_apps[idx].capture;   // menu apps grab the knob on entry
         if (s_apps[idx].screen != lv_scr_act()) {   // apps sharing a screen (radar/weather) skip the load
-            if (animate) {
-                lv_scr_load_anim_t a = forward ? LV_SCR_LOAD_ANIM_MOVE_LEFT
-                                               : LV_SCR_LOAD_ANIM_MOVE_RIGHT;
-                lv_scr_load_anim(s_apps[idx].screen, a, ANIM_MS, 0, false /*don't delete old*/);
-            } else {
-                lv_scr_load(s_apps[idx].screen);
-            }
+            lv_scr_load(s_apps[idx].screen);   // animated switches arrive here at black (fade_to)
         }
         if (s_apps[idx].onEnter) s_apps[idx].onEnter();
         Serial.printf("[shell] app %d/%d: %s\n", s_cur + 1, s_count, s_apps[idx].name);
@@ -463,15 +536,15 @@ void app_shell::openSwitcher() {
 }
 
 void app_shell::next() {
-    if (s_count) load(next_visible(s_cur, +1), true, true);
+    if (s_count) load(next_visible(fade_base(), +1), true, true);
 }
 
 void app_shell::prev() {
-    if (s_count) load(next_visible(s_cur, -1), true, false);
+    if (s_count) load(next_visible(fade_base(), -1), true, false);
 }
 
 void app_shell::goTo(int idx) {
-    if (idx >= 0 && idx < s_count && idx != s_cur) load(idx, true, idx > s_cur);
+    if (idx >= 0 && idx < s_count && idx != fade_base()) load(idx, true, idx > s_cur);
 }
 
 void app_shell::selectApp(int idx) {

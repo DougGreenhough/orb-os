@@ -31,6 +31,15 @@ void release();
 // CUSTOM_MENU_*_FMT. No-op if the canvas hasn't been created (stock builds).
 void refresh(const char *prevName, const char *curName, const char *nextName);
 
+// This fork: a legibility guard. A design's menu colours are chosen against its own
+// background plate; when that plate isn't there (no theme on the SD card, or it could not
+// be decoded) the menu sits on the plain background instead, and a dark name on black
+// cannot be read. Tell the menu what it is actually drawn on, and readable() swaps any
+// colour with too little contrast against it for a plain light one (`primary` = the
+// selected name, brighter than the two hints).
+void set_backdrop(bool hasPlate, uint32_t bgColor);
+uint32_t readable(uint32_t color, bool primary);
+
 // False when the canvas could not be allocated (PSRAM pressure). Callers must fall back
 // to a plain label rather than showing an overlay with no text on it at all.
 bool available();

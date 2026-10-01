@@ -466,6 +466,29 @@ int wrap_text(const lv_font_t *font, const char *in, int wrapWidth, char *out, s
     return lines;
 }
 
+// ---- legibility guard (this fork; see menu_text.h) -------------------------------
+static bool     s_hasPlate = false;
+static uint32_t s_bgColor  = 0x000000;
+
+void set_backdrop(bool hasPlate, uint32_t bgColor) { s_hasPlate = hasPlate; s_bgColor = bgColor; }
+
+// WCAG relative luminance, near enough: gamma 2.2 rather than the piecewise sRGB curve.
+static float luminance(uint32_t c) {
+    const float r = powf(((c >> 16) & 255) / 255.0f, 2.2f);
+    const float g = powf(((c >> 8) & 255) / 255.0f, 2.2f);
+    const float b = powf((c & 255) / 255.0f, 2.2f);
+    return 0.2126f * r + 0.7152f * g + 0.0722f * b;
+}
+
+uint32_t readable(uint32_t color, bool primary) {
+    if (s_hasPlate) return color;   // the design's own backdrop is there: its colours stand
+    const float a = luminance(color), b = luminance(s_bgColor);
+    const float ratio = (fmaxf(a, b) + 0.05f) / (fminf(a, b) + 0.05f);
+    if (ratio >= 3.0f) return color;
+    const bool darkBg = b < 0.18f;
+    return darkBg ? (primary ? 0xF2F2F2 : 0x8A8F98) : (primary ? 0x111111 : 0x555555);
+}
+
 void refresh(const char *prevName, const char *curName, const char *nextName) {
 #if CUSTOM_HAS_MENU
     if (!s_canvas) return;
@@ -504,7 +527,8 @@ void refresh(const char *prevName, const char *curName, const char *nextName) {
     // whether this design uses it is the theme's.
 #if CUSTOM_HAS_MENU_PREV
     if (prevName && prevName[0] && theme_style::menu().prev.show) {
-        const theme_style::MenuText &t = theme_style::menu().prev;
+        theme_style::MenuText t = theme_style::menu().prev;
+        t.color = readable(t.color, false);
         format_name(t.fmt, prevName, out, sizeof(out));
         if (t.upper) orb_upper(out);   // THEME_CAPS 53, after {name} is filled in
         draw_straight(theme_font::menu_prev(), out, (float)t.x, (float)t.y,
@@ -513,7 +537,8 @@ void refresh(const char *prevName, const char *curName, const char *nextName) {
 #endif
 #if CUSTOM_HAS_MENU_NEXT
     if (nextName && nextName[0] && theme_style::menu().next.show) {
-        const theme_style::MenuText &t = theme_style::menu().next;
+        theme_style::MenuText t = theme_style::menu().next;
+        t.color = readable(t.color, false);
         format_name(t.fmt, nextName, out, sizeof(out));
         if (t.upper) orb_upper(out);   // THEME_CAPS 53, after {name} is filled in
         draw_straight(theme_font::menu_next(), out, (float)t.x, (float)t.y,
@@ -522,7 +547,8 @@ void refresh(const char *prevName, const char *curName, const char *nextName) {
 #endif
 #if CUSTOM_HAS_MENU_CURRENT
     if (curName && curName[0] && theme_style::menu().current.show) {
-        const theme_style::MenuText &t = theme_style::menu().current;
+        theme_style::MenuText t = theme_style::menu().current;
+        t.color = readable(t.color, true);
         format_name(t.fmt, curName, out, sizeof(out));
         if (t.upper) orb_upper(out);   // THEME_CAPS 53, after {name} is filled in
         draw_wrapped(theme_font::menu_current(), out, (float)t.x, (float)t.y,
