@@ -57,6 +57,9 @@ ORB_PONDERER_URL=http://127.0.0.1:8790/ ORB_PONDERER_KEY=op2_... .pio/build/nati
 - `--appshot <App> <prefix>` opens one app and follows `SIM_KEYS`: `p` press, `>`/`<`
   turn, `w` wait 250 ms, `n` one network tick, `c` capture.
 - `--forecastshot <prefix>` renders the Forecast screen under made-up weather.
+- `ORB_CLOCK_FACE=aviator|imperial|digital|office` shows a built-in clock face. Without an
+  Orb Studio theme the default (Zion's baked custom design) is bare hands on black; the web
+  demo sets `aviator`. (`imperial` draws nothing without its theme either.)
 - `python3 tools/orb-to-sim.py <file.orb>` loads an Orb Studio theme into the simulator.
 
 ## Browser build

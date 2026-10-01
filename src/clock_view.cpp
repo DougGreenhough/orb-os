@@ -1834,6 +1834,17 @@ void clockview::init() {
     const bool office = app_theme::get() == APP_THEME_OFFICE;
     if (office) s_face = FACE_OFFICE;
     if (CUSTOM_CLOCK.active) s_face = FACE_CUSTOM;   // a pushed Launch Kit design wins over the theme default
+#ifndef ARDUINO
+    // Simulator and browser only (this fork): ORB_CLOCK_FACE=aviator|imperial|digital|office
+    // shows a built-in face. Without the SD-card theme the baked custom design is bare hands
+    // on black, which is what the desktop sim and the web demo would otherwise show.
+    if (const char *f = getenv("ORB_CLOCK_FACE")) {
+        if      (!strcmp(f, "aviator"))  s_face = FACE_AVIATOR;
+        else if (!strcmp(f, "imperial")) s_face = FACE_IMPERIAL;
+        else if (!strcmp(f, "digital"))  s_face = FACE_DIGITAL;
+        else if (!strcmp(f, "office"))   s_face = FACE_OFFICE;
+    }
+#endif
 
     s_screen = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(s_screen, office ? app_theme::palette().bg : COL_BLACK, 0);
