@@ -245,6 +245,39 @@ void  host_set_range_km(float km);   // defined below, once g_set/g_mockAcs are 
 static SDL_Window   *s_win = NULL;
 static SDL_Renderer *s_ren = NULL;
 static SDL_Texture  *s_tex = NULL;   // the 466x466 LVGL framebuffer
+#ifdef __EMSCRIPTEN__
+// The round glass, in the pixels. The LVGL buffer is a square and only its inscribed circle
+// exists on the device; a page can round the canvas off with CSS, but Firefox composites a
+// WebGL canvas without applying border-radius, overflow or clip-path to it, so the square
+// showed through the page's bezel. Each presented frame is therefore multiplied by this
+// mask (opaque inside the circle, clear outside, a pixel of soft edge), on a canvas that
+// has an alpha channel, and is round whatever the page's CSS manages.
+static SDL_Texture *s_roundMask = NULL;
+
+static void web_make_round_mask() {
+    const int n = SIM_W;
+    uint32_t *px = (uint32_t *)malloc((size_t)n * n * 4);
+    if (!px) return;
+    const float c = (n - 1) / 2.0f, r = n / 2.0f;
+    for (int y = 0; y < n; ++y)
+        for (int x = 0; x < n; ++x) {
+            const float d = sqrtf((x - c) * (x - c) + (y - c) * (y - c));
+            float a = r - d;                      // > 1 well inside, < 0 outside
+            a = a < 0 ? 0 : (a > 1 ? 1 : a);
+            px[y * n + x] = ((uint32_t)lroundf(a * 255.0f) << 24) | 0x00FFFFFF;   // ARGB
+        }
+    s_roundMask = SDL_CreateTexture(s_ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, n, n);
+    if (s_roundMask) {
+        SDL_UpdateTexture(s_roundMask, NULL, px, n * 4);
+        // dst = dst * mask.alpha, colour and alpha alike: premultiplied output, which is
+        // what a WebGL canvas hands the browser by default.
+        SDL_SetTextureBlendMode(s_roundMask, SDL_ComposeCustomBlendMode(
+            SDL_BLENDFACTOR_ZERO, SDL_BLENDFACTOR_SRC_ALPHA, SDL_BLENDOPERATION_ADD,
+            SDL_BLENDFACTOR_ZERO, SDL_BLENDFACTOR_SRC_ALPHA, SDL_BLENDOPERATION_ADD));
+    }
+    free(px);
+}
+#endif
 
 // Copy what is on screen into a file. Written once because there were three copies of it
 // already and --newsshot would have made a fourth, which is three too many places for a
@@ -349,6 +382,9 @@ static void sdl_flush(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *px)
     if (!g_composite && lv_disp_flush_is_last(drv)) {
         SDL_RenderClear(s_ren);
         SDL_RenderCopy(s_ren, s_tex, NULL, NULL);
+#ifdef __EMSCRIPTEN__
+        if (s_roundMask) SDL_RenderCopy(s_ren, s_roundMask, NULL, NULL);   // cut the circle
+#endif
         SDL_RenderPresent(s_ren);
     }
     lv_disp_flush_ready(drv);
@@ -1148,6 +1184,7 @@ int main(int argc, char **argv) {
     // menu bar) rather than centred, so it doesn't hide behind the browser.
 #ifdef __EMSCRIPTEN__
     EM_ASM({ Module.orbPageTitle = document.title; });   // SDL retitles the page after its window
+    SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 8);            // a canvas with alpha, for the round mask
 #endif
     s_win = SDL_CreateWindow("The Orb OS (sim)",
                              24, 44,
@@ -1173,6 +1210,9 @@ int main(int argc, char **argv) {
     SDL_RenderSetLogicalSize(s_ren, reqW, reqH);
     s_tex = SDL_CreateTexture(s_ren, SDL_PIXELFORMAT_RGB565,
                               SDL_TEXTUREACCESS_STREAMING, SIM_W, SIM_H);
+#ifdef __EMSCRIPTEN__
+    web_make_round_mask();
+#endif
 #ifndef __EMSCRIPTEN__
     if (interactive) setup_chrome();   // load frame + font + buttons; sets g_composite
 #endif
