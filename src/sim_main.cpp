@@ -56,6 +56,15 @@
 #include "native_http.h"
 #include <ArduinoJson.h>
 #include <string>
+#ifdef __EMSCRIPTEN__
+// The browser build (tools/build_web.sh): the same simulator, drawn into a page's canvas.
+// What differs is marked with __EMSCRIPTEN__ below and gathered in the "web" block
+// before main(): no bezel window, no capture modes, and the network runs on an Asyncify
+// loop instead of a thread.
+#include <emscripten.h>
+#include "net_fetch.h"
+static bool g_webHomeMoved = false;   // Settings moved home: the network loop refetches
+#endif
 
 // ---- host_* stubs (sim only): Settings reads these at render time; the real
 // definitions live in main.cpp, which isn't part of the native build. Fake,
@@ -619,7 +628,11 @@ static void sim_apply_home_location(const char *name, double lat, double lon) {
     g_set.homeLat = lat; g_set.homeLon = lon;
     radar::update(g_mockAcs, g_set);
     printf("[sim] location set: %s (%.4f, %.4f)\n", (name && name[0]) ? name : "(unnamed)", lat, lon);
+#ifdef __EMSCRIPTEN__
+    g_webHomeMoved = true;   // Settings runs inside a frame, which must not wait on the network
+#else
     sim_refresh_weather(lat, lon);
+#endif
 }
 
 // Register the real app lineup for interactive use, in the SAME order as the device
@@ -661,11 +674,13 @@ static void sim_register_apps(lv_obj_t *radarScreen) {
     // Live Open-Meteo for wherever the simulator thinks home is (ORBLAT/ORBLON), fetched
     // once here for the same reason News is below. If it fails, the mock forecast stored
     // at start-up stays, and the log says so.
+#ifndef __EMSCRIPTEN__   // the browser's network loop fetches it instead (web_net_loop)
     {
         WeatherSnapshot live;
         if (weather_fetch(g_set.homeLat, g_set.homeLon, live)) weather_store(live);
         else printf("[sim] forecast: live fetch failed, showing the MOCK forecast\n");
     }
+#endif
 #endif
     orb_extras::register_apps();   // this fork's apps (orb_extras.cpp), as on the device
     // init() FIRST, and this is not a style preference.
@@ -680,7 +695,9 @@ static void sim_register_apps(lv_obj_t *radarScreen) {
     // Fetch once, synchronously, the way the location app's own sim path does: the device
     // does this from its network task, which the simulator has no equivalent of, and a
     // headless screenshot of an empty screen would tell nobody anything.
+#ifndef __EMSCRIPTEN__   // the browser's network loop does this (web_net_loop)
     if (intelview::fetchStep()) intelview::onHeadlinesReady();
+#endif
     app_shell::add(intelview::screen(), theme_style::names().headlines,
                    intelview::onPress, intelview::onTurn, false, intelview::onEnter, intelview::onExit, !theme_style::apps().headlines);
     // The Stock Ticker, between News and Settings, matching main.cpp. Fetched once here for
@@ -713,6 +730,12 @@ static char **s_argv = nullptr;
 static void sim_restart() {
     printf("[sim] restarting...\n");
     fflush(stdout);
+#ifdef __EMSCRIPTEN__
+    // A page has no process to re-exec; reloading it is the reboot. The /tmp state files
+    // live in memory, so a reload also forgets them (the theme choice among them).
+    emscripten_run_script("location.reload()");
+    return;
+#endif
     // lv_refr_now() (called by whoever triggered this, e.g. the theme-restart notice)
     // only updates LVGL's own texture — in composite mode that never reaches the screen
     // until the next present_composite(), which was never going to happen once we exec.
@@ -759,8 +782,238 @@ static void poll_updating_overlay(uint32_t now) {
     else                               lv_obj_add_flag(s_updatingOverlay, LV_OBJ_FLAG_HIDDEN);
 }
 
+// The mock half of each main-loop pass: a 1 Hz "ADS-B poll" of the drifting aircraft and
+// the status/settings readouts, and mock answers to route lookups. Shared by the desktop
+// loop and the browser's frame (web_frame) so the two cannot drift.
+static void sim_mock_tick(Uint32 now, Uint32 &lastData) {
+    if (now - lastData >= 1000) {       // simulate a 1 Hz ADS-B poll
+        lastData = now;
+        mock_step(1.0);
+        radar::update(g_mockAcs, g_set);
+        ui_on_data_updated();
+        char clk[8];
+        snprintf(clk, sizeof(clk), "14:%02d", (int)((now / 1000) % 60));  // mock clock
+        ui_set_status(true, true, -58, clk);   // mock: connected, fresh, strong signal
+        ui_set_battery(78, false, true);   // mock battery
+        ui_set_date("08 Jun 2026");        // mock date
+        // The SHAPE main.cpp:3227 actually sends, coordinate tail included. It used to
+        // stop at the IP, which is the reason the run-on address line was never visible
+        // here: the real string is 24 characters longer and overflows the dial, the mock
+        // very nearly fit. A mock shorter than the thing it stands in for hides exactly
+        // the faults it exists to catch.
+        settingsview::setNetInfo("Configure at " ORB_MDNS_ADDR "\n192.168.1.42");
+        settingsview::setHomeCoords(28.53830, -81.37920, true);   // the Location readout
+    }
+    // fulfil route lookups with a mock (the sim has no network)
+    char wc[12];
+    if (route_pending(wc, sizeof(wc))) {
+        static const char *cities[] = { "Madrid", "London", "Paris", "Berlin",
+                                        "Rome", "Lisbon", "Amsterdam", "Dublin" };
+        int h = 0;
+        for (const char *p = wc; *p; ++p) h += (unsigned char)*p;
+        route_store(wc, cities[h % 8], cities[(h / 2 + 3) % 8]);
+    }
+}
+
+#ifdef __EMSCRIPTEN__
+// ---- the browser build ----------------------------------------------------------------
+// Two loops, as on the device, but cooperative instead of two cores:
+//   web_frame     every requestAnimationFrame (web_start_frames): input, LVGL, the UI
+//                 side of every networked screen. Never waits on the network.
+//   web_net_loop  its own export (orb_net_loop): ponderer::net_tick() every 250 ms plus the
+//                 simulator's own fetches (Forecast, News). Each fetch suspends it with
+//                 Asyncify (net_fetch.cpp) and frames keep running until the answer lands.
+// Everything the page calls (orb_*) only queues; web_frame applies it, so a knob turn can
+// never land in the middle of a network step.
+namespace web {
+    Uint32 s_last = 0, s_lastData = 0;
+    bool   s_releasePress = false;       // orb_knob's press is a click: release next frame
+    int    s_rockStage = 0;              // 1: the first half of a rock is in, the reversal is due
+    Uint32 s_rockAt = 0;
+    int    s_selectApp = -1;
+    bool   s_forecastNew = false, s_headlinesNew = false;
+    // Frame timing, for orb_perf(): the work in web_frame, and the interval between frames.
+    double s_prevStart = 0, s_workSum = 0, s_workMax = 0, s_gapSum = 0, s_gapMax = 0;
+    int    s_frames = 0;
+    char   s_perf[200];
+}
+
+extern "C" {
+// One knob event from the page: delta detents (+ clockwise) and/or a click of the button.
+EMSCRIPTEN_KEEPALIVE void orb_knob(int delta, int pressed) {
+    if (delta) simknob::injectTurn(delta);
+    if (pressed) { simknob::injectPress(true, SDL_GetTicks()); web::s_releasePress = true; }
+}
+// The rock, performed as a hand does it: one detent left, then one back ~80 ms later, which
+// knob.cpp's rule (and sim_knob's copy of it) reads as the gesture. Like the device, the
+// first detent reaches the app before the reversal is recognised.
+EMSCRIPTEN_KEEPALIVE void orb_rock() {
+    if (web::s_rockStage) return;
+    simknob::injectTurn(-1);
+    web::s_rockStage = 1;
+    web::s_rockAt = SDL_GetTicks();
+}
+EMSCRIPTEN_KEEPALIVE int orb_app_count() { return app_shell::count(); }
+EMSCRIPTEN_KEEPALIVE const char *orb_app_name(int i) { return app_shell::nameAt(i); }
+EMSCRIPTEN_KEEPALIVE int orb_app_hidden(int i) { return app_shell::hiddenAt(i) ? 1 : 0; }
+EMSCRIPTEN_KEEPALIVE int orb_app_current() { return app_shell::index(); }
+EMSCRIPTEN_KEEPALIVE void orb_select_app(int i) { web::s_selectApp = i; }
+// Repaint the whole screen now. The canvas only holds a picture until the browser has
+// composited it, so a page that wants the pixels (canvas.toDataURL) calls this first, in
+// the same task.
+EMSCRIPTEN_KEEPALIVE void orb_redraw() {
+    lv_obj_invalidate(lv_scr_act());
+    lv_obj_invalidate(lv_layer_top());
+    lv_refr_now(NULL);
+}
+// "fps=.. work_avg=..ms work_max=..ms gap_avg=..ms gap_max=..ms" over the frames since
+// the previous call, then reset.
+EMSCRIPTEN_KEEPALIVE const char *orb_perf() {
+    using namespace web;
+    const int n = s_frames ? s_frames : 1;
+    snprintf(s_perf, sizeof(s_perf), "frames=%d fps=%.1f work_avg=%.2fms work_max=%.2fms gap_avg=%.2fms gap_max=%.2fms",
+             s_frames, s_gapSum > 0 ? 1000.0 * s_frames / s_gapSum : 0.0,
+             s_workSum / n, s_workMax, s_gapSum / n, s_gapMax);
+    s_frames = 0; s_workSum = s_workMax = s_gapSum = s_gapMax = 0;
+    return s_perf;
+}
+}
+
+static void web_frame() {
+    using namespace web;
+    const double t0 = emscripten_get_now();
+    if (s_prevStart > 0) { const double g = t0 - s_prevStart; s_gapSum += g; if (g > s_gapMax) s_gapMax = g; }
+    s_prevStart = t0;
+    // Whatever the network loop was doing when it suspended, this frame must not suspend.
+    net_fetch_set_may_yield(false);
+
+    // Input comes only through orb_knob/orb_rock (the page owns the keyboard); SDL's own
+    // queue is drained so it cannot grow. No pointer device: the Orb has no touch screen.
+    SDL_Event e;
+    while (SDL_PollEvent(&e)) {}
+    const Uint32 now = SDL_GetTicks();
+    if (s_rockStage == 1 && now - s_rockAt >= 80) { simknob::injectTurn(+1); s_rockStage = 2; }
+    else if (s_rockStage == 2 && now - s_rockAt >= 600) s_rockStage = 0;   // one rock at a time
+
+    lv_tick_inc(now - s_last);
+    s_last = now;
+    simknob::tick(now);
+    if (knob::takeLongPress()) sim_restart();
+    const int32_t kd = knob::takeDelta();
+    const bool pressed = knob::takePress();
+    input_router::dispatch((int)kd, pressed);
+    input_router::tick();
+    if (s_releasePress && !pressed) { simknob::injectPress(false, now); s_releasePress = false; }
+    if (s_selectApp >= 0) {
+        const int i = s_selectApp;
+        s_selectApp = -1;
+        orb_cycle::noteInput();                        // a choice made by hand pauses the cycle
+        if (app_shell::browsing()) app_shell::browsePress();   // close the switcher first
+        app_shell::goTo(i);
+    }
+    if (s_forecastNew)  { s_forecastNew = false;  forecastview::refresh(); }
+    if (s_headlinesNew) { s_headlinesNew = false; intelview::onHeadlinesReady(); }
+    ponderer::ui_tick();
+    orb_cycle::tick(lv_tick_get());
+    sim_mock_tick(now, s_lastData);
+    wind_notice::animate();
+    lv_timer_handler();
+
+    const double w = emscripten_get_now() - t0;
+    s_workSum += w; if (w > s_workMax) s_workMax = w;
+    ++s_frames;
+    net_fetch_set_may_yield(true);
+}
+
+// The network side. Everything here may suspend inside a fetch.
+static void web_net_loop() {
+    using namespace web;
+    double nextForecast = 0;
+#if !APPS_LAUNCH_ONE
+    bool radarDone = false;
+#endif
+    for (;;) {
+        net_fetch_set_may_yield(true);
+        const double now = emscripten_get_now();
+        if (g_webHomeMoved) { g_webHomeMoved = false; nextForecast = 0;
+#if !APPS_LAUNCH_ONE
+            radarDone = false;
+#endif
+        }
+#if APP_FORECAST_ENABLED
+        if (now >= nextForecast) {   // the device refreshes its weather every half hour or so
+            WeatherSnapshot live;
+            if (weather_fetch(g_set.homeLat, g_set.homeLon, live)) {
+                weather_store(live);
+                s_forecastNew = true;
+                nextForecast = now + 30 * 60 * 1000.0;
+            } else {
+                nextForecast = now + 60 * 1000.0;
+            }
+        }
+#else
+        (void)nextForecast;
+#endif
+        if (intelview::fetchStep()) s_headlinesNew = true;
+        ponderer::net_tick();
+#if !APPS_LAUNCH_ONE
+        if (!radarDone) { radarDone = true; sim_refresh_weather(g_set.homeLat, g_set.homeLon); }
+#endif
+        emscripten_sleep(250);
+    }
+}
+
+// The page may pass settings the desktop takes from the environment (ORBLAT, ORBLON,
+// SIM_CITY, ORB_CYCLE, ...) as Module.orbEnv = { NAME: "value" } before loading orb.js.
+EM_JS(char *, web_env_lines, (), {
+    const e = (typeof Module !== 'undefined' && Module.orbEnv) || {};
+    const NL = String.fromCharCode(10);   // no backslashes: EM_JS bodies go through a C string
+    return stringToNewUTF8(Object.keys(e).map(k => k + '=' + String(e[k]).split(NL).join(' ')).join(NL));
+});
+EM_JS_DEPS(orb_web_env, "$stringToNewUTF8");
+static void web_apply_env() {
+    char *all = web_env_lines();
+    for (char *line = strtok(all, "\n"); line; line = strtok(nullptr, "\n"))
+        if (char *eq = strchr(line, '=')) { *eq = 0; setenv(line, eq + 1, 1); }
+    free(all);
+}
+
+// The frame is scheduled from JS rather than with emscripten_set_main_loop, because
+// Emscripten pauses its main loop for as long as any Asyncify sleep is in flight, and the
+// network loop is nearly always in one. An export may be called while main() is suspended,
+// provided it does not suspend itself, which web_frame never does.
+// Module.orbFps = n runs frames on a timer at n per second instead of requestAnimationFrame,
+// for hosts that throttle rAF (some embedded previews only paint around screenshots).
+extern "C" EMSCRIPTEN_KEEPALIVE void orb_frame() { web_frame(); }
+EM_JS(void, web_start_frames, (), {
+    const fps = (Module.orbFps > 0) ? (Module.orbFps | 0) : 0;
+    const next = fps ? (f) => setTimeout(f, 1000 / fps) : (f) => requestAnimationFrame(f);
+    const tick = () => {
+        try { Module._orb_frame(); }
+        catch (e) { console.error('[web] frame failed; stopping', e); return; }
+        next(tick);
+    };
+    next(tick);
+});
+
+// The network loop is started as its own export, from a timer, rather than called from
+// main(): Asyncify saves every frame between the suspension and its root, and main() is a
+// very large frame. Starting fresh keeps each suspension a few hundred bytes.
+extern "C" EMSCRIPTEN_KEEPALIVE void orb_net_loop() { web_net_loop(); }
+EM_JS(void, web_start_net, (), { setTimeout(() => Module._orb_net_loop(), 0); });
+
+static void web_run() {
+    web::s_last = web::s_lastData = SDL_GetTicks();
+    web_start_frames();
+    web_start_net();
+}
+#endif  // __EMSCRIPTEN__
+
 int main(int argc, char **argv) {
     s_argc = argc; s_argv = argv;   // kept for sim_restart()'s execvp()
+#ifdef __EMSCRIPTEN__
+    web_apply_env();   // before anything reads getenv()
+#endif
     app_theme::setRestartHook(sim_restart);   // app_theme::set() calls this on native instead of ESP.restart()
     app_theme::init();                        // load the theme saved by a previous sim_restart() (see app_theme.cpp)
     printf("[sim] app theme: %s\n", app_theme::name(app_theme::get()));
@@ -857,7 +1110,19 @@ int main(int argc, char **argv) {
         return 1;
     }
     int reqW = SIM_W, reqH = SIM_H;
-    if (interactive) {   // size the window to the (cropped, centered) Orb render + control strip.
+#ifdef __EMSCRIPTEN__
+    // Just the 466x466 screen: the page draws the Orb's frame and knob around the canvas.
+    // Keys only when the canvas has focus, so the page's own inputs keep theirs.
+    SDL_SetHint(SDL_HINT_EMSCRIPTEN_KEYBOARD_ELEMENT, "#canvas");
+    // SDL's own emscripten_sleep(0) on every present would start a second Asyncify
+    // suspension inside a frame while the network loop's is in flight, which corrupts both.
+    // The page's requestAnimationFrame already hands control back to the browser.
+    SDL_SetHint(SDL_HINT_EMSCRIPTEN_ASYNCIFY, "0");
+    const bool sizeForChrome = false;
+#else
+    const bool sizeForChrome = interactive;
+#endif
+    if (sizeForChrome) {   // size the window to the (cropped, centered) Orb render + control strip.
         // Cap at 620px tall: the live screen is a fixed 466x466 buffer, and blowing the window
         // up much bigger than that just magnifies it for no gain (and, pre-linear-filter, is what
         // made the clock face look pixelated).
@@ -881,6 +1146,9 @@ int main(int argc, char **argv) {
     }
     // Open in the top-left corner (small margin so the title bar clears the macOS
     // menu bar) rather than centred, so it doesn't hide behind the browser.
+#ifdef __EMSCRIPTEN__
+    EM_ASM({ Module.orbPageTitle = document.title; });   // SDL retitles the page after its window
+#endif
     s_win = SDL_CreateWindow("The Orb OS (sim)",
                              24, 44,
                              reqW, reqH, SDL_WINDOW_ALLOW_HIGHDPI);
@@ -889,10 +1157,15 @@ int main(int argc, char **argv) {
         printf("[sim] window/renderer creation failed: %s\n", SDL_GetError());
         return 1;
     }
+#ifdef __EMSCRIPTEN__
+    EM_ASM({ if (Module.orbPageTitle) document.title = Module.orbPageTitle; });
+#endif
     SDL_RenderSetLogicalSize(s_ren, reqW, reqH);
     s_tex = SDL_CreateTexture(s_ren, SDL_PIXELFORMAT_RGB565,
                               SDL_TEXTUREACCESS_STREAMING, SIM_W, SIM_H);
+#ifndef __EMSCRIPTEN__
     if (interactive) setup_chrome();   // load frame + font + buttons; sets g_composite
+#endif
     printf("[sim] SDL video driver: %s\n", SDL_GetCurrentVideoDriver());
 
     lv_init();
@@ -909,11 +1182,13 @@ int main(int argc, char **argv) {
     disp_drv.ver_res  = SIM_H;
     lv_disp_drv_register(&disp_drv);
 
+#ifndef __EMSCRIPTEN__   // the Orb has no touch screen; in the browser a click on it is a knob press (the page's)
     static lv_indev_drv_t indev_drv;
     lv_indev_drv_init(&indev_drv);
     indev_drv.type    = LV_INDEV_TYPE_POINTER;
     indev_drv.read_cb = sdl_mouse_read;
     lv_indev_drv_register(&indev_drv);
+#endif
 
     ui_create();
     ui_splash_show();   // ui_create() stopped raising the splash itself; the device shows it after its bake
@@ -936,12 +1211,18 @@ int main(int argc, char **argv) {
         forecast.days[i].code = codes[i]; forecast.days[i].tempMinC = lows[i];
         forecast.days[i].tempMaxC = highs[i]; forecast.days[i].rainChance = rain[i];
     }
+#ifndef __EMSCRIPTEN__   // the browser shows Forecast's own empty state until Open-Meteo answers
     weather_store(forecast);   // still-mock forecast panel (multi-day temps) — not the radar image itself
+#else
+    (void)forecast;
+#endif
     wx_radar_begin();
     // g_set, not the compiled constants: ORBLAT/ORBLON override it, and the weather fetch
     // has to follow the home the rest of the simulator is using or the override silently
     // moves the map and not the weather.
+#ifndef __EMSCRIPTEN__   // the browser's network loop fetches it (web_net_loop)
     sim_refresh_weather(g_set.homeLat, g_set.homeLon);   // real RainViewer fetch, see above
+#endif
     // Representative Meteosat-style mock. The native simulator doesn't yet have a native
     // JPEG decode path (TJpg_Decoder pulls in Arduino.h), so unlike the rain radar above,
     // this satellite/cloud view is still a placeholder — populate the shared satellite
@@ -984,6 +1265,10 @@ int main(int argc, char **argv) {
     // capture could only ever film the radar, which is what it was doing, and SIM_APP had
     // nothing to choose between.
     if (interactive || wifiShot || knobShot || windShot || rockShot || gifPath) sim_register_apps(radarScreen);   // live app switcher driven by the virtual knob
+#ifdef __EMSCRIPTEN__
+    // The roster exists from here on: tell the page, which builds its screen picker from it.
+    EM_ASM({ if (typeof Module.onOrbReady === 'function') Module.onOrbReady(); });
+#endif
 #if CUSTOM_BOOT_TARGET == 1
     // Set only by the splash push (the clock push clears it, even if a custom
     // splash is still baked in) — so this is genuinely "you just pushed the
@@ -1479,6 +1764,10 @@ int main(int argc, char **argv) {
     // The device runs ponderer::net_tick() on its network task (core 0). The simulator's
     // stand-in is a thread doing the same, so relay-fed apps update live here too. Only
     // for real interactive runs: every capture mode has returned by this point.
+#ifdef __EMSCRIPTEN__
+    web_run();   // schedules the frame and the network loop, then main() is done
+    return 0;
+#endif
     std::thread([]() {
         for (;;) { ponderer::net_tick(); std::this_thread::sleep_for(std::chrono::milliseconds(250)); }
     }).detach();
@@ -1573,33 +1862,7 @@ int main(int argc, char **argv) {
             ponderer::ui_tick();
             orb_cycle::tick(lv_tick_get());
         }
-        if (now - lastData >= 1000) {       // simulate a 1 Hz ADS-B poll
-            lastData = now;
-            mock_step(1.0);
-            radar::update(g_mockAcs, g_set);
-            ui_on_data_updated();
-            char clk[8];
-            snprintf(clk, sizeof(clk), "14:%02d", (int)((now / 1000) % 60));  // mock clock
-            ui_set_status(true, true, -58, clk);   // mock: connected, fresh, strong signal
-            ui_set_battery(78, false, true);   // mock battery
-            ui_set_date("08 Jun 2026");        // mock date
-            // The SHAPE main.cpp:3227 actually sends, coordinate tail included. It used to
-            // stop at the IP, which is the reason the run-on address line was never visible
-            // here: the real string is 24 characters longer and overflows the dial, the mock
-            // very nearly fit. A mock shorter than the thing it stands in for hides exactly
-            // the faults it exists to catch.
-            settingsview::setNetInfo("Configure at " ORB_MDNS_ADDR "\n192.168.1.42");
-            settingsview::setHomeCoords(28.53830, -81.37920, true);   // the Location readout
-        }
-        // fulfil route lookups with a mock (the sim has no network)
-        char wc[12];
-        if (route_pending(wc, sizeof(wc))) {
-            static const char *cities[] = { "Madrid", "London", "Paris", "Berlin",
-                                            "Rome", "Lisbon", "Amsterdam", "Dublin" };
-            int h = 0;
-            for (const char *p = wc; *p; ++p) h += (unsigned char)*p;
-            route_store(wc, cities[h % 8], cities[(h / 2 + 3) % 8]);
-        }
+        sim_mock_tick(now, lastData);
         // Same place main.cpp calls it: the crank steps on the loop's clock, not on a timer.
         // The simulator has to make this call too, or --windshot photographs a gauge that
         // nothing ever advanced.

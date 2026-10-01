@@ -83,6 +83,93 @@ bool net_fetch_psram(const char *url, const char *userAgent,
     return true;
 }
 
+#elif defined(__EMSCRIPTEN__)
+// Browser build (tools/build_web.sh): the browser's own fetch(), which is the only network
+// a web page has. Two shapes, because the C callers all expect a blocking call:
+//   - on the network loop (web_main's stand-in for the device's network task) the call
+//     suspends with Asyncify while fetch() runs, and the screen keeps animating meanwhile;
+//   - anywhere else (an LVGL callback such as Settings' city search, which runs inside the
+//     frame) a synchronous XHR, since only one Asyncify suspension can be in flight and the
+//     network loop may already own it. Rare, short, and blocks only for that one request.
+// Third-party hosts must allow CORS; the ones that do not simply fail here, and each screen
+// shows its own empty state as it would with no network.
+#include <emscripten.h>
+#include <cstdlib>
+#include <cstring>
+#include <cstdio>
+
+EM_JS_DEPS(orb_net_fetch, "$stringToNewUTF8,$UTF8ToString,malloc");
+
+namespace { bool s_mayYield = false; }
+void net_fetch_set_may_yield(bool on) { s_mayYield = on; }
+
+// http:// becomes https:// for other hosts: an https page may not fetch plain HTTP at all,
+// and every public service the simulator talks to (Open-Meteo, RainViewer, the gateway)
+// answers on both. Relative URLs (the demo relay) are left alone.
+EM_JS(char *, web_fix_url, (const char *url), {
+    let u = UTF8ToString(url);
+    if (u.startsWith('http://') && !u.startsWith('http://127.0.0.1') && !u.startsWith('http://localhost'))
+        u = 'https://' + u.slice(7);
+    return stringToNewUTF8(u);
+});
+
+// Returns a malloc'd buffer (length in *outLen) or 0. -1 in *outLen: longer than maxLen.
+EM_ASYNC_JS(uint8_t *, web_fetch_async, (const char *url, size_t maxLen, int timeoutMs, size_t *outLen), {
+    const u = UTF8ToString(url);
+    HEAPU32[outLen >> 2] = 0;
+    const ctl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    const timer = ctl ? setTimeout(() => ctl.abort(), timeoutMs) : 0;
+    try {
+        const r = await fetch(u, { signal: ctl ? ctl.signal : undefined, cache: 'no-store' });
+        if (r.status !== 200) { console.warn('[net] HTTP ' + r.status + ' ' + u); return 0; }
+        const b = new Uint8Array(await r.arrayBuffer());
+        if (b.length === 0) return 0;
+        if (b.length > maxLen) { console.warn('[net] too big (' + b.length + ') ' + u); return 0; }
+        const p = _malloc(b.length);
+        if (!p) return 0;
+        HEAPU8.set(b, p);
+        HEAPU32[outLen >> 2] = b.length;
+        return p;
+    } catch (e) {
+        console.warn('[net] ' + (e && e.name === 'AbortError' ? 'timeout' : 'failed (CORS or offline)') + ' ' + u);
+        return 0;
+    } finally { if (timer) clearTimeout(timer); }
+});
+
+EM_JS(uint8_t *, web_fetch_sync, (const char *url, size_t maxLen, size_t *outLen), {
+    const u = UTF8ToString(url);
+    HEAPU32[outLen >> 2] = 0;
+    try {
+        const x = new XMLHttpRequest();
+        x.open('GET', u, false);
+        x.overrideMimeType('text/plain; charset=x-user-defined');   // bytes, not text
+        x.send();
+        if (x.status !== 200) { console.warn('[net] HTTP ' + x.status + ' ' + u); return 0; }
+        const s = x.responseText;
+        if (!s.length || s.length > maxLen) return 0;
+        const p = _malloc(s.length);
+        if (!p) return 0;
+        for (let i = 0; i < s.length; ++i) HEAPU8[p + i] = s.charCodeAt(i) & 0xff;
+        HEAPU32[outLen >> 2] = s.length;
+        return p;
+    } catch (e) { console.warn('[net] failed (CORS or offline) ' + u); return 0; }
+});
+
+bool net_fetch_psram(const char *url, const char *userAgent,
+                     uint8_t **out, size_t *outLen, size_t maxLen,
+                     int connectTimeoutMs, int totalTimeoutMs) {
+    (void)userAgent; (void)connectTimeoutMs;   // the browser owns both
+    *out = nullptr; *outLen = 0;
+    char *u = web_fix_url(url);
+    size_t n = 0;
+    uint8_t *b = s_mayYield ? web_fetch_async(u, maxLen, totalTimeoutMs, &n)
+                            : web_fetch_sync(u, maxLen, &n);
+    free(u);
+    if (!b || !n) { free(b); return false; }
+    *out = b; *outLen = n;
+    return true;
+}
+
 #else
 // Desktop/native build: no PSRAM, no fragmented-heap concerns — a single libcurl GET
 // straight into a malloc'd buffer covers it. The maxLen cap is preserved so a runaway

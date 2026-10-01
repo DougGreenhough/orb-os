@@ -24,6 +24,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#include <unistd.h>   // getentropy
+#endif
 #ifdef ARDUINO
 #include <esp_heap_caps.h>
 #include <esp_random.h>
@@ -64,6 +68,8 @@ const char *env_or(const char *name, const char *fallback) {
 void random_bytes(uint8_t *out, size_t n) {
 #ifdef ARDUINO
     esp_fill_random(out, n);   // hardware RNG; true random while the radio is on
+#elif defined(__EMSCRIPTEN__)
+    for (size_t i = 0; i < n; i += 256) getentropy(out + i, (n - i) < 256 ? (n - i) : 256);
 #else
     arc4random_buf(out, n);
 #endif
@@ -145,6 +151,39 @@ bool load_key() {
 
 namespace ponderer {
 
+#ifdef __EMSCRIPTEN__
+// The browser demo (tools/build_web.sh). No device key and no transport encryption: the
+// page's own api.php, same origin and behind the site's login, answers
+// api.php?fn=<fn>[&<extra>] with the plain payload (JSON, or raw ORB5 bytes for images)
+// and a non-200 on any error. Everything above get() is unchanged; only the wire differs.
+EM_JS(char *, web_page_dir, (), {
+    const h = String(location.href).split('#')[0].split('?')[0];
+    return stringToNewUTF8(h.slice(0, h.lastIndexOf('/') + 1));
+});
+EM_JS_DEPS(orb_ponderer, "$stringToNewUTF8");
+
+const char *base_url() {
+    static char *dir = nullptr;
+    if (!dir) dir = web_page_dir();
+    return dir;
+}
+const char *key()      { return ""; }
+bool configured()      { return true; }
+
+bool get(const char *fn, const char *extra, uint8_t **body, size_t *len,
+         size_t maxLen, int timeoutMs) {
+    *body = nullptr; *len = 0;
+    char url[1024];
+    const int un = snprintf(url, sizeof(url), "api.php?fn=%s%s%s", fn,
+                            (extra && extra[0]) ? "&" : "", (extra && extra[0]) ? extra : "");
+    if (un <= 0 || un >= (int)sizeof(url)) return false;
+    if (!net_fetch_psram(url, ORB_USER_AGENT, body, len, maxLen, 3500, timeoutMs)) {
+        printf("[ponderer] %s failed\n", fn);
+        return false;
+    }
+    return true;
+}
+#else
 const char *base_url() { return env_or("ORB_PONDERER_URL", PONDERER_URL); }
 const char *key()      { return env_or("ORB_PONDERER_KEY", PONDERER_KEY); }
 bool configured()      { return base_url()[0] && load_key(); }
@@ -211,6 +250,7 @@ bool get(const char *fn, const char *extra, uint8_t **body, size_t *len,
     *len = rlen - 1;
     return true;
 }
+#endif  // __EMSCRIPTEN__
 
 void release(uint8_t *body) {
     if (!body) return;

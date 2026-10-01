@@ -59,6 +59,29 @@ ORB_PONDERER_URL=http://127.0.0.1:8790/ ORB_PONDERER_KEY=op2_... .pio/build/nati
 - `--forecastshot <prefix>` renders the Forecast screen under made-up weather.
 - `python3 tools/orb-to-sim.py <file.orb>` loads an Orb Studio theme into the simulator.
 
+## Browser build
+
+`tools/build_web.sh [outdir]` (default `build/web/`; needs `brew install emscripten`) compiles
+the simulator with Emscripten into `orb.js` + `orb.wasm` (+ `orb.data` when this checkout has a
+`sim/sdcard` to preload), reading the source list and `-D` flags from `[env:native]` so the two
+cannot drift. It is the orb-ponderer demo page's Orb (`demo/sim/`). What differs from the
+desktop is `#ifdef __EMSCRIPTEN__` in `sim_main.cpp`, `net_fetch.cpp`, `native_http.cpp` and
+`ponderer.cpp`:
+
+- just the 466x466 screen in the page's `<canvas id="canvas">`; no bezel, no capture modes, no
+  pointer input (the Orb has no touch screen);
+- frames run on the page's `requestAnimationFrame`; the network runs as a second loop that
+  suspends in `fetch()` with Asyncify (the device's network task, cooperatively);
+- `ponderer::get()` asks the page's own `api.php?fn=<fn>&<extra>` for the plain payload: no key,
+  no transport encryption (the demo is behind the site's login instead);
+- third-party fetches go straight from the browser, so they need CORS: Open-Meteo works, the
+  News gateway does not (News stays on "Getting the headlines...").
+
+The page drives it with `Module._orb_knob(delta, pressed)`, `_orb_rock()`, `_orb_app_count()`,
+`_orb_app_name(i)`, `_orb_select_app(i)`; `Module.onOrbReady()` is called once the app list
+exists. `Module.orbEnv = { ORBLAT: "51.5", ... }` sets what the desktop reads from the
+environment; `Module.orbFps = n` swaps requestAnimationFrame for an n-per-second timer.
+
 ## Known issues
 
 - None of these screens is themeable from Orb Studio (its source isn't public), so they

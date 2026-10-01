@@ -1,4 +1,17 @@
 #include "native_http.h"
+#ifdef __EMSCRIPTEN__
+// Browser build: the same GET through net_fetch_psram's fetch() path (net_fetch.cpp).
+#include "net_fetch.h"
+#include <cstdlib>
+bool native_https_get(const char *url, const char *userAgent, std::string &body, int timeoutMs) {
+    body.clear();
+    uint8_t *b = nullptr; size_t n = 0;
+    if (!net_fetch_psram(url, userAgent, &b, &n, 4u << 20, 3500, timeoutMs)) return false;
+    body.assign((const char *)b, n);
+    free(b);
+    return !body.empty();
+}
+#else
 #include <curl/curl.h>
 #include <cstdio>
 
@@ -32,3 +45,4 @@ bool native_https_get(const char *url, const char *userAgent, std::string &body,
     }
     return !body.empty();
 }
+#endif

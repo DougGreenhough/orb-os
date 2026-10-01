@@ -11,3 +11,9 @@
 bool net_fetch_psram(const char *url, const char *userAgent,
                      uint8_t **out, size_t *outLen, size_t maxLen,
                      int connectTimeoutMs, int totalTimeoutMs);
+
+#ifdef __EMSCRIPTEN__
+// Browser build only: true while the caller may suspend (Asyncify) for fetch(); false
+// makes the call a synchronous XHR instead. See net_fetch.cpp.
+void net_fetch_set_may_yield(bool on);
+#endif
