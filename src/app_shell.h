@@ -109,6 +109,9 @@ namespace app_shell {
     // clock registers none, which is the dead end knob_help exists to answer.
     bool pressCurrent();
     void selectApp(int idx);
+    // This fork: switches fade through black. Off for anything that drives the shell without
+    // LVGL's clock running (the simulator's capture modes), where a fade would never end.
+    void setFades(bool on);
     void goTo(int idx);       // jump to an app by index WITH the slide (orb_cycle)  // jump straight to an app by index, no slide (e.g. forced setup at boot)
 
     // App-switcher overlay: turning shows a big app-name label over a live preview;

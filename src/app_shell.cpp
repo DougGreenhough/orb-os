@@ -86,6 +86,9 @@ namespace {
     int next_visible(int from, int dir);   // forward decl — defined below, needed by show_overlay above it
     void load(int idx, bool animate, bool forward);   // same, needed by commit_current()
     void fade_in();                                    // this fork, defined with load() below
+    void fade_out();
+    extern bool s_fadesOn, s_menuPending, s_closePending;
+    extern int  s_fadeTarget;
 
     // The menu's background art is 466x466 and costs ~636 KB of PSRAM decoded, and the
     // glass layer another ~636 KB. Both used to be decoded once at boot and held for the
@@ -156,6 +159,9 @@ namespace {
 
     void show_overlay(const char *name) {
         if (!s_overlay) return;
+        // Still fading out towards the switcher: it goes up at black (fade_at_black), with
+        // whichever name is current by then. A turn in the meantime only restarts the clock.
+        if (s_menuPending) { s_browseTouch = millis(); return; }
 #if CUSTOM_HAS_MENU
         // Order matters, and getting it wrong showed up as plain white menu text: the
         // background art wants ~1.3 MB (plate + glass) and the text canvas ~868 KB, and
@@ -231,10 +237,23 @@ namespace {
         menu_text::release();     // give the canvas back the moment it is off screen
         overlay_art_release();    // and the background/glass art with it
 #endif
+        s_menuPending = false;
         s_browsing = false;
     }
 
     void commit_current() {                // enter the app the overlay is showing
+        // This fork: via black. The switcher fades out, comes down and the app is loaded
+        // where nobody can see it, and the app fades up. Input goes back to the app at once.
+        if (s_fadesOn) {
+            s_browsing = false;
+            s_browseAccum = 0;
+            s_menuPending = false;             // a press before the menu had even appeared
+            s_closePending = true;
+            s_fadeTarget = s_browseIdx;
+            fade_out();
+            diag::log("enter %s", s_apps[s_browseIdx].name);
+            return;
+        }
         hide_overlay();
         // Half a turn left over from browsing must not be waiting to move the menu the next
         // time it opens.
@@ -243,7 +262,6 @@ namespace {
         // onExit, the screen swap, capture state, and the incoming onEnter, so exactly
         // one app's artwork is decoded per selection rather than one per detent.
         load(s_browseIdx, false, true);
-        fade_in();   // this fork: the chosen app comes up out of black, like every other switch
         diag::log("enter %s", s_apps[s_cur].name);
     }
 
@@ -312,9 +330,32 @@ namespace {
         fade_run(LV_OPA_COVER, LV_OPA_TRANSP, FADE_IN_MS, fade_in_done);
     }
 
+    // What is waiting to happen at black. Any of the three may be set by the time the sheet
+    // gets there: an app to load, the switcher to put up, the switcher to take down.
+    bool s_fadesOn      = true;    // off in the simulator's tick-less capture modes
+    bool s_menuPending  = false;   // show the switcher overlay at black
+    bool s_closePending = false;   // hide it at black (a commit)
+
     void fade_at_black(lv_anim_t *) {
-        load(s_fadeTarget, false, true);   // the real switch, unseen
+        if (s_closePending) { s_closePending = false; hide_overlay(); }
+        if (s_fadeTarget >= 0) {
+            const int idx = s_fadeTarget;
+            s_fadeTarget = -1;
+            load(idx, false, true);            // the real switch, unseen
+        }
+        if (s_menuPending) {
+            s_menuPending = false;
+            if (s_browsing) show_overlay(s_apps[s_browseIdx].name);
+        }
         fade_in();
+    }
+
+    // Head for black (from wherever the sheet is now), then do whatever is pending.
+    void fade_out() {
+        if (s_fadePhase == FADE_OUT) return;   // already on its way; the pending work rides along
+        const int32_t from = (s_fadePhase == FADE_IN && s_fade) ? lv_obj_get_style_bg_opa(s_fade, 0) : LV_OPA_TRANSP;
+        s_fadePhase = FADE_OUT;
+        fade_run(from, LV_OPA_COVER, FADE_OUT_MS, fade_at_black);
     }
 
     // Fade to black, switch to `idx`, fade back. A second call while one is under way
@@ -322,18 +363,23 @@ namespace {
     void fade_to(int idx) {
         if (idx < 0 || idx >= s_count || !s_apps[idx].screen) return;
         s_fadeTarget = idx;
-        if (s_fadePhase == FADE_OUT) return;   // already on its way to black
-        const int32_t from = (s_fadePhase == FADE_IN && s_fade) ? lv_obj_get_style_bg_opa(s_fade, 0) : LV_OPA_TRANSP;
-        s_fadePhase = FADE_OUT;
-        fade_run(from, LV_OPA_COVER, FADE_OUT_MS, fade_at_black);
+        fade_out();
     }
 
     // The app a fade is heading for, so next()/prev() during one step on from there.
-    int fade_base() { return s_fadePhase == FADE_OUT ? s_fadeTarget : s_cur; }
+    int fade_base() { return s_fadeTarget >= 0 ? s_fadeTarget : s_cur; }
+
+    // Put the switcher up: via black when fades are on, at once when they are not.
+    void open_overlay() {
+        if (!s_fadesOn) { show_overlay(s_apps[s_browseIdx].name); return; }
+        s_menuPending = true;
+        s_browseTouch = millis();   // the settle countdown starts now, not at black
+        fade_out();
+    }
 
     void load(int idx, bool animate, bool forward) {
         if (idx < 0 || idx >= s_count || !s_apps[idx].screen) return;
-        if (animate) { (void)forward; fade_to(idx); return; }
+        if (animate && s_fadesOn) { (void)forward; fade_to(idx); return; }
         // Tell the outgoing app it's leaving before we swap, so it can free whatever it
         // decoded. Both this and onEnter now fire ONLY on a real app change (boot, a
         // committed switcher selection, or next()/prev()), never per switcher detent.
@@ -492,7 +538,7 @@ void app_shell::browseTurn(int delta) {
         // three of the four overlays were 100% transparent and are no longer shipped at
         // all, freeing 636 KB per screen. The app keeps its artwork while you browse.
         s_browseAccum = 0;   // the turn that opened it does not also move it
-        show_overlay(s_apps[s_browseIdx].name);
+        open_overlay();
         return;
     }
     // Move the cursor only. No load(), so no onExit/onEnter, so no SD read and no PNG
@@ -532,8 +578,10 @@ void app_shell::openSwitcher() {
     // A rock is a left detent and a right one. Those must not be left in the accumulator to
     // nudge the menu the moment it opens.
     s_browseAccum = 0;
-    show_overlay(s_apps[s_cur].name);
+    open_overlay();
 }
+
+void app_shell::setFades(bool on) { s_fadesOn = on; }
 
 void app_shell::next() {
     if (s_count) load(next_visible(fade_base(), +1), true, true);

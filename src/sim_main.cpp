@@ -1127,7 +1127,8 @@ int main(int argc, char **argv) {
     // --appshot <App name> <prefix>: open one app and drive it from a script, capturing as
     // it goes, for building a screen without clicking. SIM_KEYS is the script, one
     // character per step (default "nwwwwc"):
-    //   p press   > turn right   < turn left   w wait 250 ms (LVGL + ui_tick keep running)
+    //   p press   > turn right   < turn left   r rock (open the switcher)
+    //   w wait 250 ms (LVGL + ui_tick keep running)
     //   n one synchronous ponderer::net_tick() then ui_tick   c capture <prefix>-<k>.bmp
     const char *appShotApp = (argc >= 4 && strcmp(argv[1], "--appshot") == 0) ? argv[2] : NULL;
     const char *appShot    = appShotApp ? argv[3] : NULL;
@@ -1136,6 +1137,11 @@ int main(int argc, char **argv) {
     // putting a single screen up directly.
     const bool  interactive = !shotPath && !gifPath && !updateShot && !readyShot && !bakeShot && !wifiShot && !knobShot && !windShot && !rockShot;
     (void)wxShot;   // live knob/app-shell only outside headless capture
+    // Fades need LVGL's clock, and only the live window, the browser build and --appshot
+    // advance it. Everywhere else a fade would start and never finish, leaving the black
+    // sheet up over the very screen being photographed.
+    if (!interactive || themeShot || newsShot || setShot || wxShot || fcShot || getenv("SIM_SELFTEST"))
+        app_shell::setFades(false);
     (void)setShot;
 
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");   // smooth up/downscale (both the
@@ -1386,6 +1392,7 @@ int main(int argc, char **argv) {
             case '<': input_router::dispatch(-1, false); pump(60); break;
             case 'w': pump(250); break;
             case 'n': ponderer::net_tick(); ponderer::ui_tick(); pump(30); break;
+            case 'r': app_shell::openSwitcher(); pump(60); break;   // what a rock does
             case 'c': {
                 lv_refr_now(NULL);
                 SDL_RenderClear(s_ren);
