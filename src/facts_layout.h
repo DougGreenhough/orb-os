@@ -23,4 +23,9 @@ struct Result {
 // are wider than the circle as a last resort.
 bool fit(const char *text, int radius, Result &out);
 
+// The same, in one given face (a theme's own, which exists at a single size): true when the
+// whole text sets inside the circle in it without breaking a word, false when it does not
+// and the ladder should be asked instead. out.size is the face's line height.
+bool fit_face(const char *text, int radius, const lv_font_t *face, Result &out);
+
 }  // namespace facts_layout
