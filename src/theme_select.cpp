@@ -19,6 +19,7 @@ namespace {
 
 char  s_slug[theme_select::MAX_SLUG_LEN] = "";
 void (*s_restartHook)() = nullptr;
+bool s_forcedNone = false;   // simulator: ORB_THEME=none, so don't fall back to the first installed theme
 
 #ifndef ARDUINO
 // Same reasoning as app_theme.cpp's NATIVE_THEME_FILE: a re-exec starts a fresh
@@ -40,6 +41,14 @@ void init() {
     strncpy(s_slug, s.c_str(), sizeof(s_slug) - 1);
     s_slug[sizeof(s_slug) - 1] = 0;
 #else
+    // This fork: ORB_THEME=<slug> wears a theme for this one process ("none" for no theme),
+    // without touching the saved choice. The saved choice is one file shared by every
+    // simulator on the machine, which is no use when several are running at once.
+    const char *forced = getenv("ORB_THEME");
+    if (forced) {
+        if (strcmp(forced, "none") != 0) snprintf(s_slug, sizeof(s_slug), "%s", forced);
+        else { s_slug[0] = 0; s_forcedNone = true; }
+    } else
     if (FILE *f = fopen(NATIVE_SLUG_FILE, "r")) {
         if (fgets(s_slug, sizeof(s_slug), f)) {
             const size_t n = strlen(s_slug);
@@ -59,7 +68,7 @@ void init() {
     // Only ever when the slug is empty. Choosing anything, here or in Settings, writes it,
     // so this cannot override a real choice — including a deliberate return to Stock, which
     // is reached by deleting the themes rather than by clearing the pointer.
-    if (!s_slug[0]) {
+    if (!s_slug[0] && !s_forcedNone) {
         static char slugs[MAX_THEMES][MAX_SLUG_LEN];
         const int n = listInstalled(slugs);
         if (n > 0) {

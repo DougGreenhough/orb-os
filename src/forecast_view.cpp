@@ -11,6 +11,7 @@
 #include "forecast_view.h"
 #include "weather.h"
 #include "ui.h"
+#include "orb_style.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -35,6 +36,7 @@ constexpr int DAYS = 4;
 constexpr int DAY_X[DAYS] = { MID - 114, MID - 38, MID + 38, MID + 114 };
 
 lv_obj_t *s_scr = nullptr;
+orb_style::Backdrop *s_backdrop = nullptr;   // plate, glass and sparks while showing
 lv_obj_t *s_body = nullptr;          // everything that needs data; hidden while there is none
 lv_obj_t *s_empty = nullptr;         // what shows instead
 lv_obj_t *s_updated = nullptr;
@@ -267,8 +269,11 @@ void init() {
 
 lv_obj_t *screen() { return s_scr; }
 
-void onEnter() { refresh(); }
-void onExit() {}
+void onEnter() {
+    refresh();
+    s_backdrop = orb_style::attach(s_scr, "forecast");
+}
+void onExit() { orb_style::release(s_backdrop); }
 
 void refresh() {
     if (!s_scr) return;
