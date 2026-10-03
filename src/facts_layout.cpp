@@ -40,10 +40,10 @@ int text_w(const char *s, int len, const lv_font_t *f) {
 // an eighth of the size on top reads as ordinary book leading at every rung.
 int line_space_for(int size) { return size / 8; }
 
-void geometry(int n, int radius, const lv_font_t *f, int size, Geometry &g) {
+void geometry(int n, int radius, const lv_font_t *f, int ls, Geometry &g) {
     g.n = n;
     g.lh = lv_font_get_line_height(f);
-    g.ls = line_space_for(size);
+    g.ls = ls;
     g.blockH = n * g.lh + (n - 1) * g.ls;
     const float r2 = (float)radius * radius;
     for (int i = 0; i < n; ++i) {
@@ -106,11 +106,8 @@ int fill(const Words &w, const Geometry &g, const lv_font_t *f, float scale, boo
     return line + 1;
 }
 
-}  // namespace
-
-bool facts_layout::fit(const char *text, int radius, Result &out) {
-    memset(&out, 0, sizeof(out));
-    Words w;
+// Split `text` at spaces. False when there is nothing to set.
+bool split_words(const char *text, Words &w) {
     w.text = text;
     w.n = 0;
     for (int p = 0; text[p] && w.n < MAX_WORDS;) {
@@ -122,41 +119,64 @@ bool facts_layout::fit(const char *text, int radius, Result &out) {
         w.len[w.n] = (int16_t)(p - s);
         ++w.n;
     }
-    if (!w.n) return false;
+    return w.n > 0;
+}
 
-    Geometry g;
+// Set the words in face f with `ls` of extra leading, in as few lines as will hold them.
+// False when they do not fit the circle at all in this face.
+bool set_in(Words &w, int radius, const lv_font_t *f, int size, int ls, bool split,
+            facts_layout::Result &out) {
+    static Geometry g;
+    for (int i = 0; i < w.n; ++i) w.w[i] = (int16_t)text_w(w.text + w.start[i], w.len[i], f);
+    const int lh = lv_font_get_line_height(f);
+    const int maxN = (2 * radius + ls) / (lh + ls);
+    for (int n = 1; n <= maxN && n <= MAX_LINES; ++n) {
+        geometry(n, radius, f, ls, g);
+        if (fill(w, g, f, 1.0f, split, nullptr, 0, nullptr) < 0) continue;
+
+        // It fits in n lines. Now narrow every line by the same factor for as long
+        // as it still fits in n: the greedy fill leaves a long first line and a
+        // stub at the end, and this evens them out while keeping the round outline
+        // (every line shrinks in proportion to its own chord).
+        float lo = 0.3f, hi = 1.0f;
+        if (!split && n > 1) {
+            for (int it = 0; it < 12; ++it) {
+                const float mid = (lo + hi) / 2;
+                const int used = fill(w, g, f, mid, false, nullptr, 0, nullptr);
+                if (used == n) hi = mid; else lo = mid;
+            }
+        }
+        const int used = fill(w, g, f, hi, split, out.text, sizeof(out.text), &out.widest);
+        out.font = f;
+        out.size = size;
+        out.lines = used;
+        out.lineSpace = ls;
+        out.blockH = used * lh + (used - 1) * ls;
+        return true;
+    }
+    return false;
+}
+
+}  // namespace
+
+bool facts_layout::fit_face(const char *text, int radius, const lv_font_t *face, Result &out) {
+    memset(&out, 0, sizeof(out));
+    static Words w;
+    if (!face || !split_words(text, w)) return false;
+    const int lh = lv_font_get_line_height(face);
+    return set_in(w, radius, face, lh, lh / 8, false, out);
+}
+
+bool facts_layout::fit(const char *text, int radius, Result &out) {
+    memset(&out, 0, sizeof(out));
+    static Words w;
+    if (!split_words(text, w)) return false;
+
     for (int pass = 0; pass < 2; ++pass) {
         const bool split = pass == 1;
         for (int size : SIZES) {
             if (split && size > SPLIT_FROM) continue;
-            const lv_font_t *f = font_ladder(size);
-            for (int i = 0; i < w.n; ++i) w.w[i] = (int16_t)text_w(text + w.start[i], w.len[i], f);
-            const int lh = lv_font_get_line_height(f), ls = line_space_for(size);
-            const int maxN = (2 * radius + ls) / (lh + ls);
-            for (int n = 1; n <= maxN && n <= MAX_LINES; ++n) {
-                geometry(n, radius, f, size, g);
-                if (fill(w, g, f, 1.0f, split, nullptr, 0, nullptr) < 0) continue;
-
-                // It fits in n lines. Now narrow every line by the same factor for as long
-                // as it still fits in n: the greedy fill leaves a long first line and a
-                // stub at the end, and this evens them out while keeping the round outline
-                // (every line shrinks in proportion to its own chord).
-                float lo = 0.3f, hi = 1.0f;
-                if (!split && n > 1) {
-                    for (int it = 0; it < 12; ++it) {
-                        const float mid = (lo + hi) / 2;
-                        const int used = fill(w, g, f, mid, false, nullptr, 0, nullptr);
-                        if (used == n) hi = mid; else lo = mid;
-                    }
-                }
-                const int used = fill(w, g, f, hi, split, out.text, sizeof(out.text), &out.widest);
-                out.font = f;
-                out.size = size;
-                out.lines = used;
-                out.lineSpace = ls;
-                out.blockH = used * lh + (used - 1) * ls;
-                return true;
-            }
+            if (set_in(w, radius, font_ladder(size), size, line_space_for(size), split, out)) return true;
         }
     }
     // Unreachable for anything the contract allows (160 characters always fits at 12 px).
