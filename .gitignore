@@ -26,7 +26,7 @@ managed_components/
 
 # Generated staging trees, not source
 sdcard_stage/
-sim/
+sim
 data/
 
 # Working asset dumps (source of truth is elsewhere; too large/churny for git)
