@@ -236,6 +236,9 @@ def vignette_alpha(start=196.0, end=233.0, strength=0.4, w=W):
     return smooth(start, end, radius_map(w, w)) * strength
 
 
+BLACK_BELOW = 0.016      # light dimmer than this (4/255) is switched off in a plate
+
+
 # ---- out to PNG -------------------------------------------------------------------------
 _BAYER4 = np.array([[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]], np.float32) / 16.0
 
@@ -268,6 +271,11 @@ def save_plate(path, light, clip=True):
     """An opaque full-screen picture (plates, splash): 8-bit RGBA, alpha 255."""
     if clip:
         light = circle_clip(light)
+    # Black is off. The far tail of a glow is a few stray dithered pixels across a large
+    # area, which costs the panel its black and buys nothing the eye can see, so the last
+    # few levels are faded out to nothing rather than kept.
+    peak = np.clip(light, 0, None).max(axis=-1)
+    light = light * smooth(BLACK_BELOW, BLACK_BELOW * 2.8, peak)[..., None]
     q = quant565(light)
     a = np.full(q.shape[:2] + (1,), 255, np.uint8)
     Image.fromarray(np.concatenate([q, a], axis=-1), "RGBA").save(path, optimize=True, compress_level=9)

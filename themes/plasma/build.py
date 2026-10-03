@@ -252,13 +252,13 @@ def build_clock(still, loop, base):
 # =========================================================================================
 RADAR_R = 218.0
 BLIP_W, BLIP_H, BLIP_PX, BLIP_PY = 44, 76, 22, 20
-CARD_W, CARD_H = 204, 94
+CARD_W, CARD_H = 204, 110
 
 
 def build_radar():
     log("flight tracker")
-    # plate: black, a breath of violet in the middle, the glass
-    plate = glow_disc((W, W), C, C, [(DEEP, 150.0, 0.045), (MAGENTA, 46.0, 0.05)])
+    # plate: black, the lit rim with its graduations and compass points, the glass
+    plate = np.zeros((W, W, 3), np.float32)
     plate += neon(Mask().ring(C, C, RADAR_R, 2.4).arr(), MAGENTA, lw=2.4, hot=0.55, bloom=BLOOM)
     ticks = Mask()
     for i in range(72):
@@ -351,6 +351,7 @@ def build_news(rng):
     band = np.exp(-(((xx - yy * 0.55) - 60) / 34) ** 2) * pane
     light += (band * 0.028)[..., None] * np.array([0.9, 0.88, 1.0], np.float32)
     light += rim(VIOLET, r=227.5, lw=1.4, k=0.42)
+    light += glass_reflection(0.75)
     scatter_sparks(light, rng, 7, 196, 220, keepout=lambda x, y: (70 < y < 400 and 40 < x < W - 40) or y > 380 or y < 90)
     save_plate(OUT / "intel_plate.png", light)
 
@@ -367,11 +368,11 @@ def edge_filaments(frame, base, r0, r1, level):
 def build_menu(still, base, rng):
     log("menu")
     light = edge_filaments(still[5], base, 122, 190, 0.50)
-    light += glow_disc((W, W), C, C, [(MAGENTA, 120.0, 0.050), (DEEP, 210.0, 0.035)])
+    light += glow_disc((W, W), C, C, [(MAGENTA, 78.0, 0.075)])     # a breath of light behind the name
     light += rim(VIOLET, r=227.0, lw=1.6, k=0.55, bloom=BLOOM)
     light += glass_reflection(0.9)
     # keep them off the middle and off the two hints above and below it
-    scatter_sparks(light, rng, 9, 150, 216, keepout=lambda x, y: abs(x - C) < 125 and (abs(y - 92) < 26 or abs(y - 374) < 26))
+    scatter_sparks(light, rng, 9, 150, 216, keepout=lambda x, y: (abs(x - C) < 125 and (abs(y - 92) < 26 or abs(y - 374) < 26)) or (abs(x - C) < 200 and abs(y - C) < 44))
     save_plate(OUT / "menu_plate.png", light)
 
 
@@ -529,9 +530,9 @@ def build_styles(pivots):
         "offRangeEnabled": True, "offRangeColor": MAGENTA, "offRangeSize": 5,
         "centerEnabled": False, "centerRadius": 5, "centerColor": HOT, "centerInnerRadius": 2, "centerInnerColor": 0xFFFFFF,
         "rtext": [
-            rt(y=208, color=CYAN, glow=2, glowColor=0x1E90C8, fmt="{callsign}  {type}", upper=True),
+            rt(y=206, color=CYAN, glow=2, glowColor=0x1E90C8, fmt="{callsign}  {type}", upper=True),
             rt(y=233, color=TEXT, fmt="{alt} ft  {spd} kt  {dist} km"),
-            rt(y=256, color=0xB79BE6, fmt="{from} > {to}"),
+            rt(y=258, color=0xB79BE6, fmt="{from} > {to}"),
             {"show": False},
         ],
         "locText": {"show": False},
