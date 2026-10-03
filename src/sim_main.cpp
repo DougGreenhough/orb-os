@@ -41,6 +41,7 @@
 #include "app_shell.h"
 #include "app_theme.h"
 #include "theme_select.h"
+#include "theme_font.h"
 #include "update_ui.h"   // --updateshot, below
 #include "knob_help.h"  // --knobshot, below
 #include "clock_wind.h"  // --windshot, below
@@ -1231,6 +1232,7 @@ int main(int argc, char **argv) {
     printf("[sim] SDL video driver: %s\n", SDL_GetCurrentVideoDriver());
 
     lv_init();
+    theme_font::begin();   // the device calls this in main.cpp; here it loads font_*.bin off the sim card (theme_art.cpp)
 
     static lv_disp_draw_buf_t draw_buf;
     static lv_color_t buf1[SIM_W * 100];

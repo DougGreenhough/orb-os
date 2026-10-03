@@ -310,12 +310,26 @@ bool install_commit() {
 } // namespace theme_art
 
 #else   // ---- desktop simulator: no flash partitions, always use the SD/PNG path ----
+#include "theme_sd.h"
+#include <stdio.h>
 
 namespace theme_art {
 bool begin() { return false; }
 bool lookup(const char *, const char *, const uint8_t *&, int &, int &, Format &) { return false; }
 bool has(const char *, const char *) { return false; }
-bool find_blob(const char *, const char *, const uint8_t *&, size_t &) { return false; }
+// This fork: hand back a theme's raw file
+// from the simulator's card, so theme_font can load font_*.bin exactly as it does from flash.
+bool find_blob(const char *slug, const char *name, const uint8_t *&data, size_t &len) {
+    struct Entry { char key[96]; uint8_t *buf; size_t len; };
+    static Entry cache[40]; static int n = 0;
+    if (!slug || !slug[0] || !name) return false;
+    if (name[0] && name[1] == ':') name += 2;          // lv_fs hands the path with its drive letter
+    char key[96]; snprintf(key, sizeof(key), "/themes/%s/%s", slug, name);
+    for (int i = 0; i < n; ++i) if (!strcmp(cache[i].key, key)) { data = cache[i].buf; len = cache[i].len; return data != nullptr; }
+    size_t l = 0; uint8_t *b = theme_sd::read_whole(key, l, 512 * 1024);
+    if (n < 40) { snprintf(cache[n].key, sizeof(cache[n].key), "%s", key); cache[n].buf = b; cache[n].len = l; ++n; }
+    data = b; len = l; return b != nullptr;
+}
 const uint8_t *find_active(const char *, Format, int &, int &) { return nullptr; }
 bool owns(const void *) { return false; }
 bool slug_baked(const char *) { return false; }
