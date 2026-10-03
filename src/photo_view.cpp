@@ -26,8 +26,17 @@
 //     is pure CPU on bytes already in PSRAM, so it moves to the network side instead of
 //     freezing the dial. Each chunk read also takes theme_sd::lock(), for the chime stream.
 //
+// Dress. Colours and faces come from orb_style::look("photos") on every enter (restyle()).
+// A photograph stays in its own colours on every theme but a one-colour one (Cold War's
+// phosphor), where it is redrawn in the theme's colour as it is made, on the network side,
+// so it sits behind the CRT glass like everything else. The theme's glass and sparks lie
+// over the photo; its plate is only ever seen behind the empty states and the first fade.
+// On ink-on-paper themes the caption's scrim, the badge and the menu are paper, with ink on
+// them. With no theme everything is exactly as it was first drawn.
+//
 // Memory (see docs/memory.md). A frame is 466 x 466 RGB565, 434 KB, always PSRAM. At most
-// three exist (1.3 MB): the one on the glass, the one before it (so a left turn is instant)
+// three exist (1.3 MB; two when the theme's backdrop would take the screen past ~2.2 MB of
+// PSRAM, see frames_for_look(): then there is no "previous" and a left turn fetches another): the one on the glass, the one before it (so a left turn is instant)
 // and the next one, prefetched so a right turn is. During a crossfade the outgoing photo
 // holds the prefetch's place, and the network side will not make a fourth. Frames are taken on enter and given back on exit; one the network
 // side is still holding is freed by that side on its next pass, never by this one (rule 2).
@@ -39,7 +48,12 @@
 #include "app_shell.h"
 #include "curved_text.h"
 #include "theme_sd.h"
+#include "orb_style.h"
+#include "theme_art.h"
+#include "theme_select.h"
+#include "theme_style.h"
 #include <ArduinoJson.h>
+#include <math.h>
 #include <atomic>
 #include <mutex>
 #include <stdio.h>
@@ -84,10 +98,21 @@ constexpr size_t   SD_MAX_FILE    = 6u * 1024 * 1024;    // a 12 MP phone JPEG i
 #define SD_MAX_FILE_TEXT "6 MB"
 constexpr const char *SD_DIR      = "/photos";
 
-constexpr uint32_t COL_TEXT = 0xF2F2F2;
-constexpr uint32_t COL_SOFT = 0xC9CDD4;
-constexpr uint32_t COL_DIM  = 0x8A8F98;
-constexpr uint32_t COL_ACCENT = 0xFFB23F;
+// Every colour the screen uses, worked out from the theme's look in restyle(). The values
+// here are the unthemed screen's.
+struct Pal {
+    uint32_t text   = 0xF2F2F2;
+    uint32_t soft   = 0xC9CDD4;   // the date under a caption, the menu's heading
+    uint32_t dim    = 0x8A8F98;
+    uint32_t accent = 0xFFB23F;   // trouble, and the tick beside the source in use
+    uint32_t ground = 0x000000;   // the caption's scrim and shadow, the badge, the menu's veil
+    uint32_t sel    = 0xF2F2F2;   // the highlighted menu row...
+    uint32_t onSel  = 0x111111;   // ...and what is written on it
+    lv_opa_t scrimMax = 200, veil = 170, badge = 150;
+    int      glow   = 0;
+};
+const Pal PLAIN;
+Pal s_pal;
 
 enum Source : uint8_t { SRC_PIXEL = 0, SRC_SD = 1 };
 
@@ -140,6 +165,24 @@ struct Frame {
     uint32_t        gen = 0;
 };
 
+// One-colour themes: the ramp a photo's brightness is mapped through, ground to text colour.
+// Written by the UI side in onEnter() before the screen goes active; read by the network
+// side, which does nothing for this screen until it is.
+std::atomic<bool> s_tint{ false };
+uint16_t          s_tintRamp[64];
+
+void tint_frame(Frame &f) {
+    if (!s_tint.load() || !f.px) return;
+    uint16_t *px = (uint16_t *)f.px;   // inside f.mem, which this frame owns
+    const int n = f.w * f.h;
+    for (int i = 0; i < n; ++i) {
+        const uint16_t v = px[i];
+        // 5-6-5 to a 6-bit luminance: (2R + 5G + B) / 8, each brought to 6 bits first.
+        const int y = (((v >> 11) << 1) * 2 + ((v >> 5) & 63) * 5 + ((v & 31) << 1)) >> 3;
+        px[i] = s_tintRamp[y > 63 ? 63 : y];
+    }
+}
+
 void frame_free(Frame &f) {
     if (f.relayBody) ponderer::release(f.mem); else photos_decode::release(f.mem);
     f = Frame();
@@ -155,7 +198,8 @@ std::atomic<uint8_t>  s_source{ SRC_PIXEL };
 Frame    s_back;                  // the prefetched next photo (network side fills it)
 bool     s_backReady = false;
 int      s_uiFrames = 0;          // frames the UI side holds: on the glass, fading out, previous
-constexpr int MAX_FRAMES = 3;     // those, plus the prefetched next one, never more than this
+int      s_maxFrames = 3;         // those, plus the prefetched next one, never more than this
+                                  // (2 under a heavy backdrop; set in onEnter, under s_mx)
 uint8_t  s_relayStatus = ST_WORKING;
 
 // Card bytes on their way from the UI side to the decoder.
@@ -168,7 +212,7 @@ char     s_rawName[96] = "";
 bool     s_sdFailed = false;
 char     s_sdFailWhy[40] = "";
 
-bool may_make_frame_locked() { return s_uiFrames + (s_backReady ? 1 : 0) < MAX_FRAMES; }
+bool may_make_frame_locked() { return s_uiFrames + (s_backReady ? 1 : 0) < s_maxFrames; }
 
 // ---- network side ---------------------------------------------------------------------------
 
@@ -282,6 +326,7 @@ bool relay_step() {
     }
     f.mem = img; f.relayBody = true; f.px = px; f.w = w; f.h = h;
     f.src = SRC_PIXEL; f.gen = s_workGen;
+    tint_frame(f);
     strncpy(s_lastRelayId, id, sizeof(s_lastRelayId) - 1);
     std::lock_guard<std::mutex> g(s_mx);
     if (!keep_going() || s_backReady) { frame_free(f); return false; }
@@ -322,6 +367,7 @@ bool sd_step() {
     photos_decode::release(raw);
     if (ok) {
         f.w = f.h = SIDE;
+        tint_frame(f);
         photos_decode::caption_from_name(name, f.caption, sizeof(f.caption));
         if (!f.date[0]) photos_decode::date_from_name(name, f.date, sizeof(f.date));
         Serial.printf("[photos] %s: decoded in %u ms\n", name, (unsigned)(now_ms() - t0));
@@ -373,7 +419,9 @@ lv_obj_t *s_menu = nullptr;
 lv_obj_t *s_menuRow[3] = {};
 lv_obj_t *s_menuLbl[3] = {};
 lv_obj_t *s_menuMark[3] = {};
+lv_obj_t *s_menuTitle = nullptr;
 lv_timer_t *s_timer = nullptr;
+orb_style::Backdrop *s_backdrop = nullptr;
 
 constexpr int CAP_Y = 340;                     // the caption band: y 340..466
 constexpr int CAP_H = SIDE - CAP_Y;
@@ -434,6 +482,93 @@ lv_obj_t *label(lv_obj_t *parent, const lv_font_t *font, uint32_t color) {
     lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_text(l, "");
     return l;
+}
+
+// ---- dress ----------------------------------------------------------------------------------
+
+uint32_t mix(uint32_t a, uint32_t b, float t) {
+    auto ch = [&](int sh) { return (uint32_t)lroundf(((a >> sh) & 255) * (1 - t) + ((b >> sh) & 255) * t) << sh; };
+    return ch(16) | ch(8) | ch(0);
+}
+
+const lv_font_t *montserrat(int px) {
+    switch (px) {
+        case 12: return &lv_font_montserrat_12; case 14: return &lv_font_montserrat_14;
+        case 16: return &lv_font_montserrat_16; case 20: return &lv_font_montserrat_20;
+        case 22: return &lv_font_montserrat_22; case 28: return &lv_font_montserrat_28;
+    }
+    return &lv_font_montserrat_16;
+}
+
+// A theme's face may carry only the glyphs its own screens use, and a missing one draws as
+// nothing at all; so a face is only worn for words it can spell.
+bool covers(const lv_font_t *f, const char *t) {
+    lv_font_glyph_dsc_t g;
+    for (uint32_t i = 0; t[i];) {
+        const uint32_t c = _lv_txt_encoded_next(t, &i);
+        if (c == '\n' || c == '\r') continue;
+        if (!lv_font_get_glyph_dsc(f, &g, c, 0)) return false;
+    }
+    return true;
+}
+
+// The theme's face for these words at about this size (when they also fit in maxW, if one
+// is given), else Montserrat at exactly it.
+const lv_font_t *face(orb_style::Role role, int px, const char *words, int maxW = 0) {
+    if (orb_style::themed_font(role, px)) {
+        const lv_font_t *f = orb_style::font(role, px);
+        if (covers(f, words)) {
+            if (!maxW) return f;
+            lv_point_t sz;
+            lv_txt_get_size(&sz, words, f, 0, 0, LV_COORD_MAX, 0);
+            if (sz.x <= maxW) return f;
+        }
+    }
+    return montserrat(px);
+}
+
+// A headline: the theme's headline face, its text face failing that.
+const lv_font_t *headline(int px, const char *words, int maxW = 0) {
+    const lv_font_t *f = face(orb_style::TITLE, px, words, maxW);
+    return f == montserrat(px) ? face(orb_style::BODY, px, words, maxW) : f;
+}
+
+void set_font(lv_obj_t *l, const lv_font_t *f) {
+    if (lv_obj_get_style_text_font(l, 0) != f) lv_obj_set_style_text_font(l, f, 0);
+}
+
+Pal palette(const orb_style::Look &l) {
+    const orb_style::Look none;
+    const bool plain = l.text == none.text && l.dim == none.dim && l.accent == none.accent &&
+                       l.accent2 == none.accent2 && l.rule == none.rule && l.bg == none.bg &&
+                       l.dark && !l.mono && !l.glow && !l.sparks && !l.plate[0] && !l.overlay[0];
+    if (plain) return PLAIN;
+    Pal p;
+    p.text   = l.text;
+    p.soft   = mix(l.text, l.dim, 0.4f);
+    p.dim    = l.dim;
+    p.accent = l.accent;
+    p.ground = l.bg;
+    p.sel    = l.accent;
+    p.onSel  = l.bg;
+    p.glow   = l.glow;
+    // Ink on paper: the veils are paper, and heavier, so ink reads on them over any photo.
+    if (!l.dark) { p.scrimMax = 235; p.veil = 215; p.badge = 215; }
+    return p;
+}
+
+// How many frames this theme leaves room for. The backdrop's plate (424 KB) and glass
+// (636 KB) are PSRAM unless the theme is baked into flash, where they cost nothing.
+int frames_for_look(const orb_style::Look &l) {
+    size_t total = 3 * FRAME_BYTES + (size_t)LV_CANVAS_BUF_SIZE_TRUE_COLOR_ALPHA(SIDE, CAP_H);
+    int w = 0, h = 0;
+    const char *slug = theme_select::activeSlug();
+    if (!slug || !slug[0]) return 3;   // no theme folder: nothing for a backdrop to load
+    if (l.plate[0] && theme_style::hasAsset(l.plate) &&
+        !theme_art::find_active(l.plate, theme_art::FMT_RGB565, w, h)) total += (size_t)SIDE * SIDE * 2;
+    if (l.overlay[0] && theme_style::hasAsset(l.overlay) &&
+        !theme_art::find_active(l.overlay, theme_art::FMT_RGB565_ALPHA, w, h)) total += (size_t)SIDE * SIDE * 3;
+    return total > 2200u * 1024u ? 2 : 3;
 }
 
 void ui_frames_update() {
@@ -511,21 +646,21 @@ void draw_caption(const Frame &f) {
     if (!cap && !date) return;
     const curved_text::Target dst = { s_capBuf, SIDE, CAP_H };
     const float cx = MID, cy = MID - CAP_Y;
-    const lv_color_t shadow = lv_color_black();
+    const lv_color_t shadow = lv_color_hex(s_pal.ground);
     char buf[80];
     // Caption inside, date outside it. Along the bottom the arc's outer line is the lower
     // one, and the smaller type belongs nearer the rim, where the chord is shortest.
     if (cap) {
-        const lv_font_t *font = &lv_font_montserrat_20;
+        const lv_font_t *font = headline(20, f.caption);
         const float R = date ? 174.0f : 186.0f;
         fit(font, f.caption, buf, sizeof(buf), (int)(R * 1.9f));
-        curved_text::draw_arc(dst, font, buf, cx, cy, R, 180.0f, lv_color_hex(COL_TEXT), 3, shadow);
+        curved_text::draw_arc(dst, font, buf, cx, cy, R, 180.0f, lv_color_hex(s_pal.text), 3, shadow);
     }
     if (date) {
-        const lv_font_t *font = cap ? &lv_font_montserrat_14 : &lv_font_montserrat_16;
+        const lv_font_t *font = face(orb_style::SMALL, cap ? 14 : 16, f.date);
         const float R = cap ? 199.0f : 190.0f;
         fit(font, f.date, buf, sizeof(buf), (int)(R * 1.2f));
-        curved_text::draw_arc(dst, font, buf, cx, cy, R, 180.0f, lv_color_hex(COL_SOFT), 3, shadow);
+        curved_text::draw_arc(dst, font, buf, cx, cy, R, 180.0f, lv_color_hex(s_pal.soft), 3, shadow);
     }
     lv_obj_invalidate(s_capCanvas);
 }
@@ -533,7 +668,9 @@ void draw_caption(const Frame &f) {
 void badge(uint8_t src) {
     if (!s_badge) return;
     lv_anim_del(s_badge, nullptr);
-    lv_label_set_text(s_badge, src == SRC_SD ? "SD CARD" : "PIXEL ALBUM");
+    const char *words = src == SRC_SD ? "SD CARD" : "PIXEL ALBUM";
+    set_font(s_badge, face(orb_style::SMALL, 12, words));
+    lv_label_set_text(s_badge, words);
     lv_obj_set_style_opa(s_badge, LV_OPA_COVER, 0);
     show(s_badge, true);
     lv_obj_fade_out(s_badge, 500, BADGE_MS);
@@ -551,8 +688,9 @@ void drop_old() {
         lv_img_cache_invalidate_src(&s_dsc[under]);
     }
     // The photo that just left becomes "previous", so turning left brings it straight back.
+    // (Under a heavy backdrop there is room for two frames, and the other is the next one.)
     frame_free(s_prev);
-    s_prev = s_old;
+    if (s_maxFrames >= 3) s_prev = s_old; else frame_free(s_old);
     s_old = Frame();
     ui_frames_update();
 }
@@ -588,6 +726,7 @@ void put_on_glass(Frame &f) {
     lv_obj_move_foreground(s_capCanvas);
     lv_obj_move_foreground(s_badge);
     lv_obj_move_foreground(s_menu);
+    orb_style::raise(s_backdrop);                // and the theme's glass over all of it
     show(s_img[next], true);
     s_top = next;
 
@@ -612,7 +751,9 @@ void put_on_glass(Frame &f) {
 
 void message(const char *icon, bool trouble, const char *title, const char *detail) {
     lv_label_set_text(s_msgIcon, icon);
-    lv_obj_set_style_text_color(s_msgIcon, lv_color_hex(trouble ? COL_ACCENT : COL_DIM), 0);
+    lv_obj_set_style_text_color(s_msgIcon, lv_color_hex(trouble ? s_pal.accent : s_pal.dim), 0);
+    set_font(s_msgTitle, headline(22, title, 320));
+    set_font(s_msg, face(orb_style::BODY, 16, detail, 330));
     lv_label_set_text(s_msgTitle, title);
     lv_label_set_text(s_msg, detail);
 }
@@ -842,7 +983,7 @@ void sd_tick() {
     if (s_sdInFlight || (int32_t)(now_ms() - s_sdRetryAt) < 0) return;
     {
         std::lock_guard<std::mutex> g(s_mx);
-        if (s_backReady || s_rawReady || s_uiFrames >= MAX_FRAMES) return;
+        if (s_backReady || s_rawReady || s_uiFrames >= s_maxFrames) return;
     }
     char path[112];
     switch (sd_pick(path, sizeof(path))) {
@@ -933,10 +1074,11 @@ void menu_paint() {
     for (int i = 0; i < 3; ++i) {
         const bool sel = i == s_menuSel;
         lv_obj_set_style_bg_opa(s_menuRow[i], sel ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
-        lv_obj_set_style_text_color(s_menuLbl[i], lv_color_hex(sel ? 0x111111 : COL_TEXT), 0);
+        lv_obj_set_style_text_color(s_menuLbl[i], lv_color_hex(sel ? s_pal.onSel : s_pal.text), 0);
+        lv_obj_set_style_shadow_width(s_menuRow[i], sel ? s_pal.glow * 8 : 0, 0);
         const bool mark = (i == 1 && src == SRC_PIXEL) || (i == 2 && src == SRC_SD);
         show(s_menuMark[i], mark);
-        lv_obj_set_style_text_color(s_menuMark[i], lv_color_hex(sel ? 0x111111 : COL_ACCENT), 0);
+        lv_obj_set_style_text_color(s_menuMark[i], lv_color_hex(sel ? s_pal.onSel : s_pal.accent), 0);
     }
 }
 
@@ -985,6 +1127,19 @@ void tick_cb(lv_timer_t *) {
     render();
 }
 
+// The scrim's pixels: the ground colour (black, or paper), clear at the top of the band and
+// most of the way to solid at the rim.
+void paint_scrim() {
+    const uint32_t c = s_pal.ground;
+    const uint16_t v = (uint16_t)(((c >> 8) & 0xF800) | ((c >> 5) & 0x07E0) | ((c >> 3) & 0x001F));
+    for (int y = 0; y < SCRIM_H; ++y) {
+        const float t = (float)y / (SCRIM_H - 1);
+        const float e = t * t * (3.0f - 2.0f * t);
+        s_scrimPx[y * 3] = v & 0xFF; s_scrimPx[y * 3 + 1] = v >> 8;
+        s_scrimPx[y * 3 + 2] = (uint8_t)((float)s_pal.scrimMax * e);
+    }
+}
+
 void build() {
     s_scr = lv_obj_create(nullptr);
     lv_obj_set_style_bg_color(s_scr, lv_color_black(), 0);
@@ -999,12 +1154,7 @@ void build() {
 
     // The scrim: black, clear at the top of the band and about two-thirds dark at the rim,
     // eased so there is no visible edge where it starts. One pixel wide; lv_img tiles it.
-    for (int y = 0; y < SCRIM_H; ++y) {
-        const float t = (float)y / (SCRIM_H - 1);
-        const float e = t * t * (3.0f - 2.0f * t);
-        s_scrimPx[y * 3] = 0; s_scrimPx[y * 3 + 1] = 0;
-        s_scrimPx[y * 3 + 2] = (uint8_t)(200.0f * e);
-    }
+    paint_scrim();
     memset(&s_scrimDsc, 0, sizeof(s_scrimDsc));
     s_scrimDsc.header.cf = LV_IMG_CF_TRUE_COLOR_ALPHA;
     s_scrimDsc.header.w = 1;
@@ -1022,7 +1172,7 @@ void build() {
     lv_obj_set_pos(s_capCanvas, 0, CAP_Y);
     show(s_capCanvas, false);
 
-    s_badge = label(s_scr, &lv_font_montserrat_12, COL_TEXT);
+    s_badge = label(s_scr, &lv_font_montserrat_12, s_pal.text);
     lv_obj_set_style_text_letter_space(s_badge, 2, 0);
     lv_obj_set_style_bg_color(s_badge, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(s_badge, 150, 0);
@@ -1033,16 +1183,16 @@ void build() {
     show(s_badge, false);
 
     // Empty states: a line saying what is wrong, two saying what to do, and where the menu is.
-    s_msgIcon = label(s_scr, &lv_font_montserrat_28, COL_DIM);
+    s_msgIcon = label(s_scr, &lv_font_montserrat_28, s_pal.dim);
     lv_obj_align(s_msgIcon, LV_ALIGN_CENTER, 0, -86);
-    s_msgTitle = label(s_scr, &lv_font_montserrat_22, COL_TEXT);
+    s_msgTitle = label(s_scr, &lv_font_montserrat_22, s_pal.text);
     lv_obj_set_width(s_msgTitle, 320);
     lv_obj_align(s_msgTitle, LV_ALIGN_CENTER, 0, -38);
-    s_msg = label(s_scr, &lv_font_montserrat_16, COL_DIM);
+    s_msg = label(s_scr, &lv_font_montserrat_16, s_pal.dim);
     lv_obj_set_width(s_msg, 330);
     lv_obj_set_style_text_line_space(s_msg, 4, 0);
     lv_obj_align(s_msg, LV_ALIGN_CENTER, 0, 16);
-    s_msgHint = label(s_scr, &lv_font_montserrat_14, COL_DIM);
+    s_msgHint = label(s_scr, &lv_font_montserrat_14, s_pal.dim);
     lv_label_set_text(s_msgHint, "Press for options");
     lv_obj_align(s_msgHint, LV_ALIGN_BOTTOM_MID, 0, -62);
 
@@ -1051,26 +1201,72 @@ void build() {
     lv_obj_set_size(s_menu, SIDE, SIDE);
     lv_obj_set_style_bg_color(s_menu, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(s_menu, 170, 0);
-    lv_obj_t *title = label(s_menu, &lv_font_montserrat_12, COL_SOFT);
+    lv_obj_t *title = label(s_menu, &lv_font_montserrat_12, s_pal.soft);
     lv_obj_set_style_text_letter_space(title, 3, 0);
     lv_label_set_text(title, "PHOTOS");
     lv_obj_align(title, LV_ALIGN_CENTER, 0, -92);
+    s_menuTitle = title;
     static const char *ROWS[3] = { "Next photo", "Pixel album", "SD card" };
     for (int i = 0; i < 3; ++i) {
         lv_obj_t *r = blank(s_menu);
         lv_obj_set_size(r, 250, 46);
         lv_obj_align(r, LV_ALIGN_CENTER, 0, -44 + i * 54);
         lv_obj_set_style_radius(r, LV_RADIUS_CIRCLE, 0);
-        lv_obj_set_style_bg_color(r, lv_color_hex(COL_TEXT), 0);
+        lv_obj_set_style_bg_color(r, lv_color_hex(s_pal.sel), 0);
         s_menuRow[i] = r;
-        s_menuLbl[i] = label(r, &lv_font_montserrat_20, COL_TEXT);
+        s_menuLbl[i] = label(r, &lv_font_montserrat_20, s_pal.text);
         lv_label_set_text(s_menuLbl[i], ROWS[i]);
         lv_obj_center(s_menuLbl[i]);
-        s_menuMark[i] = label(r, &lv_font_montserrat_16, COL_ACCENT);
+        s_menuMark[i] = label(r, &lv_font_montserrat_16, s_pal.accent);
         lv_label_set_text(s_menuMark[i], LV_SYMBOL_OK);
         lv_obj_align(s_menuMark[i], LV_ALIGN_RIGHT_MID, -18, 0);
     }
     show(s_menu, false);
+}
+
+// Put the theme's colours and faces on everything, and set the network side up to match.
+// On every enter: the look is not known when init() builds the screen.
+void restyle() {
+    const orb_style::Look &l = orb_style::look("photos");
+    s_pal = palette(l);
+    const Pal &p = s_pal;
+    auto text = [](lv_obj_t *o, uint32_t c) { lv_obj_set_style_text_color(o, lv_color_hex(c), 0); };
+
+    paint_scrim();
+    lv_img_cache_invalidate_src(&s_scrimDsc);
+    lv_obj_invalidate(s_scrim);
+
+    text(s_badge, p.text);
+    lv_obj_set_style_bg_color(s_badge, lv_color_hex(p.ground), 0);
+    lv_obj_set_style_bg_opa(s_badge, p.badge, 0);
+
+    text(s_msgTitle, p.text);
+    text(s_msg, p.dim);
+    text(s_msgHint, p.dim);
+    set_font(s_msgHint, face(orb_style::SMALL, 14, lv_label_get_text(s_msgHint)));
+
+    lv_obj_set_style_bg_color(s_menu, lv_color_hex(p.ground), 0);
+    lv_obj_set_style_bg_opa(s_menu, p.veil, 0);
+    text(s_menuTitle, p.soft);
+    set_font(s_menuTitle, face(orb_style::SMALL, 12, lv_label_get_text(s_menuTitle)));
+    for (int i = 0; i < 3; ++i) {
+        lv_obj_set_style_bg_color(s_menuRow[i], lv_color_hex(p.sel), 0);
+        lv_obj_set_style_shadow_color(s_menuRow[i], lv_color_hex(p.sel), 0);
+        lv_obj_set_style_shadow_opa(s_menuRow[i], p.glow ? LV_OPA_80 : LV_OPA_TRANSP, 0);
+        // The tick sits 18 px in from the right; the words must clear it on both sides.
+        set_font(s_menuLbl[i], face(orb_style::BODY, 20, lv_label_get_text(s_menuLbl[i]), 250 - 2 * 44));
+    }
+
+    if (l.mono) {
+        for (int i = 0; i < 64; ++i) {
+            const uint32_t c = mix(l.bg, l.text, i / 63.0f);
+            s_tintRamp[i] = (uint16_t)(((c >> 8) & 0xF800) | ((c >> 5) & 0x07E0) | ((c >> 3) & 0x001F));
+        }
+    }
+    s_tint.store(l.mono);
+    const int frames = frames_for_look(l);
+    std::lock_guard<std::mutex> g(s_mx);
+    s_maxFrames = frames;
 }
 
 void attach_caption_canvas() {
@@ -1109,7 +1305,9 @@ void init() {
 lv_obj_t *screen() { return s_scr; }
 
 void onEnter() {
+    restyle();                       // before the network side is let loose: it reads the tint
     attach_caption_canvas();
+    s_backdrop = orb_style::attach(s_scr, "photos");
     s_gen.fetch_add(1);
     s_wantNow = true;
     s_announce = true;
@@ -1146,6 +1344,7 @@ void onExit() {
     ui_frames_update();
     release_caption_canvas();
     show(s_scrim, false);
+    orb_style::release(s_backdrop);
     // The prefetched frame and any card bytes in flight belong to the network side, which
     // frees them on its next pass now that s_active is false.
 }

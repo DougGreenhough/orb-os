@@ -11,6 +11,8 @@
 static uint32_t now_ms() { return millis(); }
 #else
 #include <chrono>
+#include <math.h>
+#include <stdlib.h>
 static uint32_t now_ms() {
     using namespace std::chrono;
     return (uint32_t)duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
@@ -169,7 +171,92 @@ bool fetch_art() {
     return true;
 }
 
+#ifndef ARDUINO
+// ---- SIMULATOR ONLY: a canned Spotify, for drawing the screen without one ---------------
+// ORB_MUSIC_FAKE=playing|paused|idle skips the relay altogether and feeds the UI a made-up
+// track and a cover computed here (a gradient with a few rings), so every state of the
+// screen can be captured. Commands from the knob are applied to the canned state. Nothing
+// of this exists in a device build.
+bool fake_step(const char *mode) {
+    static bool inited = false, playing = false;
+    static int volume = 45;
+    static int32_t progress = 83000;
+    static uint32_t at = 0;
+    if (!inited) { inited = true; playing = !strcmp(mode, "playing"); at = now_ms(); }
+    bool fresh = false;
+    for (;;) {
+        QCmd q;
+        {
+            std::lock_guard<std::mutex> lock(s_mu);
+            if (!s_qLen) break;
+            q = s_q[0];
+            memmove(s_q, s_q + 1, sizeof(QCmd) * (size_t)(--s_qLen));
+        }
+        if (q.c == music::CMD_TOGGLE) playing = !playing;
+        if (q.c == music::CMD_VOL) volume = q.arg;
+        if (q.c == music::CMD_NEXT || q.c == music::CMD_PREV) progress = 0;
+        s_seqSent = q.seq;
+        fresh = true;
+    }
+    if (!s_showingFlag) return false;
+    if (s_forgetArt.exchange(false)) s_haveArt[0] = 0;
+    if (s_pollNow.exchange(false) || fresh) s_nextPoll = now_ms();
+    if (!due(s_nextPoll)) return false;
+    s_nextPoll = now_ms() + POLL_MS;
+    if (playing) progress += (int32_t)(now_ms() - at);
+    at = now_ms();
+
+    s_scratch = Now{};
+    s_scratch.volume = -1;
+    s_scratch.cmdSeq = s_seqSent;
+    if (!strcmp(mode, "idle")) { s_scratch.status = music::ST_IDLE; publish(s_scratch); return true; }
+    s_scratch.status = music::ST_ACTIVE;
+    s_scratch.playing = playing;
+    s_scratch.progressMs = progress % 247000;
+    s_scratch.durationMs = 247000;
+    s_scratch.volume = volume;
+    s_scratch.canVolume = true;
+    copy_ascii(s_scratch.title, sizeof(s_scratch.title), "Wichita Lineman");
+    copy_ascii(s_scratch.artist, sizeof(s_scratch.artist), "Glen Campbell");
+    copy_ascii(s_scratch.device, sizeof(s_scratch.device), "Kitchen speaker");
+    copy_ascii(s_scratch.artId, sizeof(s_scratch.artId), "fake-cover");
+    publish(s_scratch);
+
+    if (strcmp(s_haveArt, s_scratch.artId) != 0) {
+        const int n = music::ART_PX;
+        uint8_t *body = (uint8_t *)malloc(8 + (size_t)n * n * 2);   // what ponderer::release() frees
+        if (!body) return true;
+        memcpy(body, "ORB5", 4);
+        body[4] = n & 255; body[5] = n >> 8; body[6] = n & 255; body[7] = n >> 8;
+        uint16_t *px = (uint16_t *)(body + 8);
+        for (int y = 0; y < n; ++y)
+            for (int x = 0; x < n; ++x) {
+                // A dusk sky over a sun: warm to cool top to bottom, rings round a point.
+                const float u = (float)x / n, v = (float)y / n;
+                const float d = sqrtf((u - 0.62f) * (u - 0.62f) + (v - 0.4f) * (v - 0.4f));
+                const float ring = 0.5f + 0.5f * cosf(d * 34.0f);
+                float r = 0.95f - 0.75f * v, g = 0.35f + 0.25f * u - 0.2f * v, b = 0.25f + 0.65f * v;
+                const float k = d < 0.16f ? 1.0f : 0.72f + 0.28f * ring * (1.0f - d);
+                if (d < 0.16f) { r = 1.0f; g = 0.86f; b = 0.55f; }
+                auto c = [&](float f, int max) { f *= k; return (int)((f < 0 ? 0 : f > 1 ? 1 : f) * max); };
+                px[y * n + x] = (uint16_t)((c(r, 31) << 11) | (c(g, 63) << 5) | c(b, 31));
+            }
+        std::lock_guard<std::mutex> lock(s_mu);
+        if (!s_showing) { free(body); return true; }
+        ponderer::release(s_artBody);
+        s_artBody = body;
+        s_artW = s_artH = n;
+        copy_ascii(s_artId, sizeof(s_artId), s_scratch.artId);
+        copy_ascii(s_haveArt, sizeof(s_haveArt), s_scratch.artId);
+    }
+    return true;
+}
+#endif
+
 bool net_step() {
+#ifndef ARDUINO
+    if (const char *fake = getenv("ORB_MUSIC_FAKE")) return fake_step(fake);
+#endif
     if (!ponderer::configured()) return false;   // the UI says so without our help
     // Commands go out even after the screen has been left: a volume change still in the
     // debounce when the app switcher was rocked open is something the person asked for.
