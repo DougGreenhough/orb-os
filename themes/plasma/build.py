@@ -14,7 +14,7 @@ What each file is for, and which firmware source decides its shape:
   theme.json            name, author, app roster, and the asset list     (theme_style.cpp)
   *_style.json          one per screen: colours, positions, geometry     (theme_style.cpp)
   extras_style.json     the fork's own screens                           (orb_style.cpp)
-  clock_plate*.png      the dial and its five extra frames, 466x466      (custom_sprite.cpp)
+  clock_plate.png       the dial, 466x466 (still: no extra frames)       (custom_sprite.cpp)
   clock_hand_*.png      hands, pointing up, pivot given in clock_style   (clock_view.cpp)
   clock_shadow_*.png    same size and pivot as the hand: here, its glow  (clock_view.cpp)
   clock_overlay.png     glass and the hub, over the hands                (custom_sprite.cpp)
@@ -51,7 +51,7 @@ CHAKRA_M = FONTS / "ChakraPetch-Medium.ttf"
 CHAKRA_SB = FONTS / "ChakraPetch-SemiBold.ttf"
 
 SEED = 20261003            # for sparks; the discharge has seeds of its own below
-FRAMES = 5                 # EXTRA clock frames, the same number Steam Punk ships
+FRAMES = 0                 # EXTRA clock frames: none. The dial is still; the hands are the plasma now
 
 
 def log(*a):
@@ -146,13 +146,14 @@ def neon_text(s, x, y, font, size, color, w=W, h=W, spacing=0, bloom=BLOOM_WIDE,
 # =========================================================================================
 # Clock
 # =========================================================================================
-HAND_W = 72
+HAND_W = 92                # wide enough for a bolt to wander and still fade out before the sprite's edge
 HAND_PAD = 30
 HANDS = {
     #          length  start  width  colour
-    "hour":   (112,    24,    8.5,   MAGENTA),
-    "minute": (176,    24,    6.0,   CYAN),
-    "second": (198,   -36,    1.8,   HOT),
+    # Each hand is an arc of plasma from the electrode: its own colour, its own reach.
+    "hour":   (108,    30,    5.2,   MAGENTA),
+    "minute": (170,    30,    3.8,   CYAN),
+    "second": (201,    30,    1.9,   HOT),
 }
 DATE_Y = 322
 
@@ -194,43 +195,72 @@ def clock_static():
     return light
 
 
+def bolt(rng, a, b, sway, limit):
+    """A jagged path from a to b by midpoint displacement: the sideways kick halves at each
+    level, so it reads as one arc with fine crackle on it. `limit` keeps it this far, at
+    most, from the straight line (the sprite is only so wide)."""
+    pts = [a, b]
+    amp = sway
+    for _ in range(5):
+        out = [pts[0]]
+        for p, q in zip(pts, pts[1:]):
+            mx, my = (p[0] + q[0]) / 2, (p[1] + q[1]) / 2
+            dx, dy = q[0] - p[0], q[1] - p[1]
+            d = max(1e-6, float(np.hypot(dx, dy)))
+            k = rng.uniform(-1, 1) * amp
+            mx, my = mx - dy / d * k, my + dx / d * k
+            mx = float(np.clip(mx, a[0] - limit, a[0] + limit))
+            out += [(mx, my), q]
+        pts = out
+        amp *= 0.55
+    return pts
+
+
 def build_clock(still, loop, base):
     log("clock")
-    static = clock_static()
-    # how the filaments sit on the dial: dim, and dimmer still under the date and the mark
-    r = radius_map()
-    yy, xx = np.mgrid[0:W, 0:W].astype(np.float32)
-    quiet = 1 - 0.55 * np.exp(-(((xx - C) / 80) ** 2 + ((yy - DATE_Y) / 26) ** 2))
-    quiet *= 1 - 0.45 * np.exp(-(((xx - C) / 60) ** 2 + ((yy - 148) / 18) ** 2))
-    level = (0.64 * (1 - 0.35 * smooth(180, 228, r)) * smooth(34, 42, r) * quiet)[..., None]
-    fils = [filaments_only(f, base) for f in loop]
-    # there and back again: 0 1 2 3 2 1, so the last frame meets the first without a jump
-    order = [0, 1, 2, 3, 2, 1]
-    assert len(order) == FRAMES + 1
-    for i, k in enumerate(order):
-        plate = static + fils[k] * level
-        save_plate(OUT / ("clock_plate.png" if i == 0 else f"clock_plate_{i:02d}.png"), plate)
+    # One still plate. The dial used to carry a loop of the engine's filaments behind the
+    # hands; the hands themselves are the discharge now, so the dial is left dark and quiet.
+    save_plate(OUT / "clock_plate.png", clock_static())
 
     pivots = {}
     for name, (length, start, width, color) in HANDS.items():
         tail = max(0, -start)
         h = HAND_PAD + length + tail + HAND_PAD
         px, py = HAND_W / 2, HAND_PAD + length
-        m = Mask(HAND_W, h).line(px, py - start, px, py - length, width).arr()
-        if name == "second":
-            # a spark riding the tip, and a bead on the tail
-            tip = Mask(HAND_W, h).dot(px, py - length, 3.0).dot(px, py + tail, 2.4).arr()
-            light = neon(m, color, lw=width, hot=0.75, bloom=((1.2, 0.5), (3.0, 0.22)))
-            light += neon(tip, PINK, lw=5.0, hot=0.8, bloom=((1.5, 0.6), (4.0, 0.35)))
-            halo = (blur(m, 4.5) * 1.6 + blur(tip, 6.0) * 2.6)[..., None] * rgb(MAGENTA) * 0.20
-        else:
-            core = Mask(HAND_W, h).line(px, py - start - 1, px, py - length + 1, width * 0.36).arr()
-            light = neon(m, color, lw=width, core=0.95, hot=0.30, bloom=BLOOM_TIGHT)
-            light += core[..., None] * np.array([0.9, 0.9, 0.9], np.float32)
-            # glass tube ends: a small brighter cap where the electrode would be sealed in
-            caps = Mask(HAND_W, h).dot(px, py - start, width * 0.5).dot(px, py - length, width * 0.5).arr()
-            light += blur(caps, 1.2)[..., None] * rgb(color) * 0.5
-            halo = (blur(m, 5.5) * 0.30 * (5.5 * 2.5066 / width) + blur(m, 10.5) * 0.13 * (10.5 * 2.5066 / width))[..., None] * rgb(color)
+        # A bolt, not a tube: a jagged path from just outside the electrode to the tip, drawn
+        # thick at the root and fine at the end, with a few short forks leaving it and a
+        # pink spark where it lands (the engine's filaments end pink too). The shape is
+        # fixed, like any hand: it is the same bolt wherever it points.
+        hrng = np.random.default_rng(SEED + {"hour": 11, "minute": 23, "second": 37}[name])
+        sway = {"hour": 9.0, "minute": 12.0, "second": 13.0}[name]
+        pts = bolt(hrng, (px, py - start), (px, py - length), sway, HAND_W / 2 - 16)
+        body, core = Mask(HAND_W, h), Mask(HAND_W, h)
+        n = len(pts) - 1
+        for i in range(n):
+            k = i / n
+            wd = width * (1.0 - 0.55 * k)                      # tapers to the tip
+            body.line(*pts[i], *pts[i + 1], wd)
+            core.line(*pts[i], *pts[i + 1], max(0.7, wd * 0.34))
+        # forks: short, thin, leaning outwards and forwards
+        forks = Mask(HAND_W, h)
+        for f in range({"hour": 2, "minute": 3, "second": 3}[name]):
+            i = int(n * (0.25 + 0.6 * (f + hrng.random() * 0.6) / 3.2))
+            x0, y0 = pts[min(i, n - 1)]
+            side = 1 if (f + (name == "minute")) % 2 else -1
+            ang = np.radians(side * hrng.uniform(24, 46))
+            ln = hrng.uniform(13, 26) * (0.8 if name == "hour" else 1.0)
+            fx, fy = x0 + np.sin(ang) * ln, y0 - np.cos(ang) * ln
+            fx = float(np.clip(fx, 14, HAND_W - 14))
+            mid = ((x0 + fx) / 2 + hrng.uniform(-3, 3), (y0 + fy) / 2 + hrng.uniform(-2, 2))
+            forks.line(x0, y0, *mid, max(0.9, width * 0.30))
+            forks.line(*mid, fx, fy, max(0.7, width * 0.22))
+        m = np.maximum(body.arr(), forks.arr() * 0.8)
+        tip = Mask(HAND_W, h).dot(px, py - length, max(2.2, width * 0.55)).arr()
+        light = neon(m, color, lw=width, core=0.95, hot=0.45, bloom=BLOOM_TIGHT)
+        light += core.arr()[..., None] * np.array([0.95, 0.95, 0.95], np.float32)
+        light += neon(tip, PINK, lw=5.0, hot=0.85, bloom=((1.5, 0.6), (4.0, 0.38)))
+        halo = (blur(m, 5.0) * 0.34 * (5.0 * 2.5066 / max(width, 3.0)) + blur(m, 10.0) * 0.14 * (10.0 * 2.5066 / max(width, 3.0)))[..., None] * rgb(color)
+        halo += (blur(tip, 6.0) * 2.4)[..., None] * rgb(PINK) * 0.22
         # keep the glow off the sprite's own edges, so no box shows when it turns
         xs = np.arange(HAND_W, dtype=np.float32) + 0.5
         edge = np.clip(np.minimum(xs, HAND_W - xs) / 9.0, 0, 1)[None, :, None]
@@ -509,7 +539,6 @@ def build_styles(pivots):
             "hour": hand("hour"), "minute": hand("minute"), "second": hand("second"),
             "static1": {"show": False}, "static2": {"show": False},
         },
-        "bgAnim": {"frames": FRAMES, "fps": 6, "loop": True, "everySec": 60},
     })
 
     rt = lambda **kw: dict(text_slot(**kw), onCard=True)
@@ -665,6 +694,7 @@ def build_manifest():
         "format": 1,
         "name": "Plasma",
         "author": "Doug Greenhough",
+        "license": "CC0 1.0",
         "names": {},
         "assets": assets,
         "assetsHash": h,

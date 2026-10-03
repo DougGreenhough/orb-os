@@ -30,7 +30,9 @@ int main(int argc, char **argv) {
 
     plasma::Engine *eng = new plasma::Engine();
     plasma::Render ren = {};
-    if (!plasma::render_alloc(ren, HUE, R0)) { fprintf(stderr, "render_alloc failed\n"); return 1; }
+    plasma::Palette pal;                 // the native ball: the page's own colours
+    pal.hue = HUE;
+    if (!plasma::render_alloc(ren, pal, R0)) { fprintf(stderr, "render_alloc failed\n"); return 1; }
     ren.ring = -1;                       // no Power readout on the glass
     ren.rng = seed ^ 0x9E3779B9u;        // the renderer's dither and fibres, pinned too
     plasma::init(*eng, R0, seed);
