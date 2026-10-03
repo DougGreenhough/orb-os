@@ -1,0 +1,52 @@
+diff --git a/src/sim_main.cpp b/src/sim_main.cpp
+index 8557152..c489ec8 100644
+--- a/src/sim_main.cpp
++++ b/src/sim_main.cpp
+@@ -41,6 +41,7 @@
+ #include "app_shell.h"
+ #include "app_theme.h"
+ #include "theme_select.h"
++#include "theme_font.h"
+ #include "update_ui.h"   // --updateshot, below
+ #include "knob_help.h"  // --knobshot, below
+ #include "clock_wind.h"  // --windshot, below
+@@ -1231,6 +1232,7 @@ int main(int argc, char **argv) {
+     printf("[sim] SDL video driver: %s\n", SDL_GetCurrentVideoDriver());
+ 
+     lv_init();
++    theme_font::begin();   // SIM-ONLY PREVIEW PATCH: the device calls this in main.cpp
+ 
+     static lv_disp_draw_buf_t draw_buf;
+     static lv_color_t buf1[SIM_W * 100];
+diff --git a/src/theme_art.cpp b/src/theme_art.cpp
+index 6908541..b1f0fcf 100644
+--- a/src/theme_art.cpp
++++ b/src/theme_art.cpp
+@@ -310,12 +310,26 @@ bool install_commit() {
+ } // namespace theme_art
+ 
+ #else   // ---- desktop simulator: no flash partitions, always use the SD/PNG path ----
++#include "theme_sd.h"
++#include <stdio.h>
+ 
+ namespace theme_art {
+ bool begin() { return false; }
+ bool lookup(const char *, const char *, const uint8_t *&, int &, int &, Format &) { return false; }
+ bool has(const char *, const char *) { return false; }
+-bool find_blob(const char *, const char *, const uint8_t *&, size_t &) { return false; }
++// SIM-ONLY PREVIEW PATCH (themes/plasma/sim-theme-fonts.patch): hand back a theme's raw file
++// from the simulator's card, so theme_font can load font_*.bin exactly as it does from flash.
++bool find_blob(const char *slug, const char *name, const uint8_t *&data, size_t &len) {
++    struct Entry { char key[96]; uint8_t *buf; size_t len; };
++    static Entry cache[40]; static int n = 0;
++    if (!slug || !slug[0] || !name) return false;
++    if (name[0] && name[1] == ':') name += 2;          // lv_fs hands the path with its drive letter
++    char key[96]; snprintf(key, sizeof(key), "/themes/%s/%s", slug, name);
++    for (int i = 0; i < n; ++i) if (!strcmp(cache[i].key, key)) { data = cache[i].buf; len = cache[i].len; return data != nullptr; }
++    size_t l = 0; uint8_t *b = theme_sd::read_whole(key, l, 512 * 1024);
++    if (n < 40) { snprintf(cache[n].key, sizeof(cache[n].key), "%s", key); cache[n].buf = b; cache[n].len = l; ++n; }
++    data = b; len = l; return b != nullptr;
++}
+ const uint8_t *find_active(const char *, Format, int &, int &) { return nullptr; }
+ bool owns(const void *) { return false; }
+ bool slug_baked(const char *) { return false; }
