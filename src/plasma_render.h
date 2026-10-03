@@ -18,6 +18,9 @@
 //   - One full-frame pass. It adds the glass, the gas and the bloom, clamps, dithers,
 //     packs to RGB565, and clears the accumulator for the next frame on its way past.
 // Everything outside the circle is left alone, and stays black.
+//
+// Themes. The colours come from a Palette. A themed ball is smaller than the panel and
+// sits in a rim, so the same passes cover fewer pixels; see Palette.
 #include <stdint.h>
 #include "plasma_engine.h"
 
@@ -28,6 +31,24 @@ constexpr int LG = 60;           // bloom grid: cells of 4 render px
 constexpr int LCELL = 4;
 constexpr int FIBMAX = 10;       // brush fibres per foot
 constexpr int FIB = 7;           // numbers per fibre
+
+// What colours the discharge is. The default is the page's own: `hue` is the middle of a
+// range the channels run across, blue bodies to pink ends. A theme gives its two colours
+// as hues instead (body, end), which are mixed along a channel rather than turned through,
+// and a smaller ball with a rim, outside which nothing is drawn (r.out is left alone there
+// and the view lets the theme's backdrop show).
+struct Palette {
+    bool  native = true;
+    float hue = 288.0f;          // native: the page's default
+    float bodyHue = 0, endHue = 0;   // themed: degrees
+    float bodySat = 1, endSat = 1;   // themed: 0..1, scales every saturation
+    float spread = 20.0f;        // how far strands' hues stray, degrees
+    float ball = 115.5f;         // themed: the ball's radius to the outside of its rim, render px
+    float rimW = 0;              // themed: the rim's width, render px (under 2.5 = a drawn line)
+    float rim[3] = { 0, 0, 0 };  // themed: its colour, 0..1
+    float bloom = 1.0f;          // themed: scales the bloom
+    float gas = 1.0f;            // themed: scales the gas's own haze and the glass's sheen
+};
 
 struct Render {
     uint8_t  *acc;               // RW*RW*3, additive light
@@ -44,6 +65,8 @@ struct Render {
     float elecE[3];              // the electrode's added light, summed, for the bloom
     int16_t chordL[RW], chordR[RW];
     float hue;
+    Palette pal;
+    int baseK;                   // r^2 -> base[] index, 16.16
     uint32_t rng;
     // what the last frame cost, for the log
     int segs;
@@ -54,7 +77,7 @@ struct Render {
 
 // Allocate (PSRAM on the device) and build the tables. False if anything failed; the
 // caller then frees whatever did arrive with render_free().
-bool render_alloc(Render &r, float hue, float r0);
+bool render_alloc(Render &r, const Palette &pal, float r0);
 void render_free(Render &r);
 
 // Draw the engine's current state into r.out.

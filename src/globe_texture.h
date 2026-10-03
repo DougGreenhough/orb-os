@@ -12,6 +12,10 @@ extern "C" {
 #endif
 extern const uint16_t globe_tex[GLOBE_TEX_W * GLOBE_TEX_H];     // RGB565, row 0 = 90N, col 0 = 180W
 extern const uint8_t  globe_ocean[GLOBE_TEX_W * GLOBE_TEX_H / 8]; // 1 = water; bit (u & 7) of byte (v*W+u) >> 3
+// Signed distance to the shore: 128 = the shore, more = land, less = water,
+// GLOBE_COAST_SCALE steps per texel-height (180/GLOBE_TEX_H degrees) of true distance.
+#define GLOBE_COAST_SCALE 12
+extern const uint8_t  globe_coast[GLOBE_TEX_W * GLOBE_TEX_H];
 #ifdef __cplusplus
 }
 #endif
