@@ -8,6 +8,7 @@
 #include "facts_view.h"
 #include "plasma_view.h"
 #include "globe_view.h"
+#include "orb_themes.h"
 
 namespace orb_extras {
 
@@ -42,6 +43,7 @@ void register_apps() {
     app_shell::add(globeview::screen(), "Globe", globeview::onPress, globeview::onTurn, false,
                    globeview::onEnter, globeview::onExit, false);
 #endif
+    orb_themes::init();   // themes over WiFi from orb-ponderer; not an app, but it starts here
 }
 
 } // namespace orb_extras

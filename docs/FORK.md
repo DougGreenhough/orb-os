@@ -24,6 +24,14 @@ orb-ponderer setup page (fetched every 5 min, cached across reboots); defaults
 `ORB_CYCLE_*` in `config.h`; in the simulator `ORB_CYCLE="secs=8;resume=20;apps=Clock,Facts"`. `orb_extras.cpp` registers all of them for
 both the device and the simulator; each has an `APP_*_ENABLED` switch in `config.h`.
 
+**Themes over WiFi** (`orb_themes.*`): the relay's setup page says which uploaded themes
+this Orb holds and which to wear; the Orb checks every ten minutes, fetches what differs,
+removes what it installed that is no longer listed, and restarts into the chosen one.
+Upstream's `theme_pull` (Zion's account server) is untouched, and themes this module did
+not install are never removed. `tools/pack-orb.py <folder>` makes a `.orb` from a theme
+folder; theme PNGs must be 8-bit RGBA or the firmware draws them black. Simulator:
+`ORB_THEMES_FIRST_MS=300` brings the first check forward.
+
 **orb-ponderer** (github.com/DougGreenhough/orb-ponderer) is the relay on
 spiritdemon.net that does what this board can't: HTTPS, OAuth, image resizing.
 `ponderer.{h,cpp}` is its client and a
@@ -87,6 +95,8 @@ environment; `Module.orbFps = n` swaps requestAnimationFrame for an n-per-second
 
 ## Known issues
 
+- A theme may rename upstream's screens (Clock -> "Time"). The screen cycle stores screens
+  by name, so after such a theme arrives the cycle's ticks need setting again.
 - None of these screens is themeable from Orb Studio (its source isn't public), so they
   don't have the plate/glass/theme-font controls `docs/adding-a-screen.md` lists.
 - PNGdec's bundled zlib has a bug in its 64-bit fast-copy path that corrupted about half of
