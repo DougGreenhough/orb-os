@@ -137,7 +137,8 @@ em++ "${OBJS[@]}" -o "$OUT/orb.js" \
     -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=64MB -sSTACK_SIZE=1MB \
     -sENVIRONMENT=web \
     -sEXPORTED_FUNCTIONS=_main,_malloc,_free,_orb_knob,_orb_rock,_orb_app_count,_orb_app_name,_orb_app_hidden,_orb_app_current,_orb_select_app,_orb_redraw,_orb_perf,_orb_frame,_orb_net_loop \
-    -sEXPORTED_RUNTIME_METHODS=UTF8ToString,ccall,cwrap \
+    -sEXPORTED_RUNTIME_METHODS=UTF8ToString,ccall,cwrap,FS,addRunDependency,removeRunDependency \
+    -sFORCE_FILESYSTEM=1 \
     ${PRELOAD[@]+"${PRELOAD[@]}"}
 
 ls -l "$OUT"/orb.* | awk '{printf "[web] %-10s %8.1f KB\n", $NF, $5/1024}' | sed "s|$OUT/||"

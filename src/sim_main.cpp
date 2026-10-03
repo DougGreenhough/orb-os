@@ -1012,6 +1012,12 @@ static void web_apply_env() {
     for (char *line = strtok(all, "\n"); line; line = strtok(nullptr, "\n"))
         if (char *eq = strchr(line, '=')) { *eq = 0; setenv(line, eq + 1, 1); }
     free(all);
+    // ORB_THEME=<slug>: wear this theme. The page puts a theme's files into the in-memory
+    // card (/sim/sdcard/themes/<slug>/) before main() runs and names it here; the choice
+    // normally lives in a file that a page reload has just thrown away.
+    if (const char *t = getenv("ORB_THEME")) {
+        if (FILE *f = fopen("/tmp/orb_sim_theme_slug", "w")) { fputs(t, f); fclose(f); }
+    }
 }
 
 // The frame is scheduled from JS rather than with emscripten_set_main_loop, because
