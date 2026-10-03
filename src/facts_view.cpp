@@ -69,7 +69,7 @@ constexpr int BODY_W = 2 * BODY_R + 4;
 // a short fact the ladder would set at 48 px comes out a third of the size in it. At 0 the
 // theme's face is used whenever the fact fits in it; at, say, 60 it is used only when it is
 // at least 60% of the height the ladder would have given the same fact.
-constexpr int THEME_FACE_MIN_PCT = 0;
+constexpr int THEME_FACE_MIN_PCT = 60;
 
 // What this screen is drawn in. Filled from the look by palette_from().
 constexpr int MAX_TOPIC_COLS = 6;

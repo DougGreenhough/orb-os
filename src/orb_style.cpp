@@ -44,7 +44,7 @@ uint32_t rnd() {
 #ifdef ARDUINO
     return esp_random();
 #else
-    return (uint32_t)arc4random();
+    return ((uint32_t)rand() << 16) ^ (uint32_t)rand();   // rand(): the browser build has no arc4random
 #endif
 }
 float frand() { return (rnd() & 0xFFFF) / 65535.0f; }

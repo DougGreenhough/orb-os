@@ -24,6 +24,19 @@ orb-ponderer setup page (fetched every 5 min, cached across reboots); defaults
 `ORB_CYCLE_*` in `config.h`; in the simulator `ORB_CYCLE="secs=8;resume=20;apps=Clock,Facts"`. `orb_extras.cpp` registers all of them for
 both the device and the simulator; each has an `APP_*_ENABLED` switch in `config.h`.
 
+**Dressing for the theme** (`orb_style.*`): this fork's screens take their colours,
+backdrop plate, glass, typefaces and glow from the theme being worn. An unknown theme is
+matched from its own menu backdrop and colours; the four stock themes have tuned presets;
+a theme can say more in `extras_style.json`. `ORB_STYLE=<preset>` and `ORB_THEME=<slug>|none`
+choose a look for one simulator run. Each screen then draws to suit: the Globe is a
+photograph, a phosphor outline, an engraved atlas, an antique or neon glass; single-colour
+themes tint photos and covers.
+
+**The Plasma theme** (`themes/plasma/`): this fork's own theme, neon and glass on black,
+made by hand rather than in Orb Studio. `themes/plasma/build.py` regenerates every image
+(the clock's drifting filaments come from the firmware's own plasma engine), converts the
+fonts and packs `Plasma.orb`.
+
 **Themes over WiFi** (`orb_themes.*`): the relay's setup page says which uploaded themes
 this Orb holds and which to wear; the Orb checks every ten minutes, fetches what differs,
 removes what it installed that is no longer listed, and restarts into the chosen one.
@@ -97,8 +110,8 @@ environment; `Module.orbFps = n` swaps requestAnimationFrame for an n-per-second
 
 - A theme may rename upstream's screens (Clock -> "Time"). The screen cycle stores screens
   by name, so after such a theme arrives the cycle's ticks need setting again.
-- None of these screens is themeable from Orb Studio (its source isn't public), so they
-  don't have the plate/glass/theme-font controls `docs/adding-a-screen.md` lists.
+- None of these screens is themeable from Orb Studio (its source isn't public); they follow
+  a theme through `orb_style` instead, not through Studio controls.
 - PNGdec's bundled zlib has a bug in its 64-bit fast-copy path that corrupted about half of
   all PNGs in the **simulator** (never the device, which is 32-bit). The simulator build
   now switches that path off with `-DARDUINO_ARCH_RP2040` (see platformio.ini). PNGdec
