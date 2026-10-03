@@ -37,6 +37,12 @@ made by hand rather than in Orb Studio. `themes/plasma/build.py` regenerates eve
 (the clock's drifting filaments come from the firmware's own plasma engine), converts the
 fonts and packs `Plasma.orb`.
 
+**Hands that change shape** (`handAnim` in `clock_style.json`, this fork only): a theme may ship
+up to five more versions of each hand (`clock_hand_hour_1.png` ..., same size and pivot) and
+the clock shows a different one a few times a second: `"handAnim": {"frames": 4, "fps": 9}`.
+The second hand changes every step for free; the hour and minute hands change every third
+step, each time at the cost of a full compose. Stock firmware ignores the key and the files.
+
 **Themes over WiFi** (`orb_themes.*`): the relay's setup page says which uploaded themes
 this Orb holds and which to wear; the Orb checks every ten minutes, fetches what differs,
 removes what it installed that is no longer listed, and restarts into the chosen one.

@@ -305,6 +305,36 @@ CustomSprite wind_crank_shadow() {
                      s_windCrankShTried, "wind crank shadow");
 }
 
+// This fork: the extra versions of the three moving hands (see theme_style.h, HandAnim).
+constexpr int HAND_FRAMES = theme_style::Clock::HAND_ANIM_MAX;
+uint8_t *s_handF[3][HAND_FRAMES] = {};
+int      s_handFW[3][HAND_FRAMES] = {}, s_handFH[3][HAND_FRAMES] = {};
+bool     s_handFTried[3][HAND_FRAMES] = {};
+
+CustomSprite custom_hand_frame(int hand, int frame) {
+    if (hand < 0 || hand > 2 || frame <= 0 || frame > HAND_FRAMES) return custom_hand(hand);
+    const int f = frame - 1;
+    if (!s_handFTried[hand][f]) {
+        s_handFTried[hand][f] = true;
+        static const char *stem[3] = { "hour", "minute", "second" };
+        char name[28];
+        snprintf(name, sizeof(name), "clock_hand_%s_%d.png", stem[hand], frame);
+        int w = 0, h = 0;
+        if (const uint8_t *p = theme_art::find_active(name, theme_art::FMT_RGB565_ALPHA, w, h)) {
+            s_handF[hand][f] = (uint8_t *)p; s_handFW[hand][f] = w; s_handFH[hand][f] = h;
+        } else {
+            uint8_t *o = nullptr;
+            if (decode_sd_first(name, nullptr, 0, true, o, w, h, "hand version")) {
+                s_handF[hand][f] = o; s_handFW[hand][f] = w; s_handFH[hand][f] = h;
+            }
+        }
+    }
+    // A version of another size would break the sweep, which repairs the box of ONE sprite.
+    const CustomSprite base = custom_hand(hand);
+    if (!s_handF[hand][f] || s_handFW[hand][f] != base.w || s_handFH[hand][f] != base.h) return base;
+    return { s_handF[hand][f], s_handFW[hand][f], s_handFH[hand][f] };
+}
+
 CustomSprite custom_hand(int kind) {
     if (kind < 0 || kind >= SLOTS) return { nullptr, 0, 0 };
     if (!s_handTried[kind]) {
@@ -380,6 +410,13 @@ void custom_sprite_release() {
             heap_caps_free(s_hand[i]);
         }
         s_hand[i] = nullptr; s_handW[i] = 0; s_handH[i] = 0;
+    }
+    for (int k = 0; k < 3; ++k) for (int f = 0; f < HAND_FRAMES; ++f) {
+        if (s_handF[k][f] && !theme_art::owns(s_handF[k][f])) {
+            freed += (size_t)s_handFW[k][f] * s_handFH[k][f] * 3;
+            heap_caps_free(s_handF[k][f]);
+        }
+        s_handF[k][f] = nullptr; s_handFTried[k][f] = false;
     }
     s_plateTried = s_overlayTried = s_splashOvTried = false;
     for (int i = 0; i < 5; ++i) s_handTried[i] = false;

@@ -485,6 +485,17 @@ struct Clock {
         bool loop    = false;  // true: never stops. false: hold on frame nought, play now and then
         int  everySec = 3600;  // when holding, how long between plays. 3600 is the top of the hour
     } bgAnim;
+    // This fork: hands that change shape. A theme may ship up to HAND_ANIM_MAX extra
+    // versions of each hand (clock_hand_hour_1.png ... beside clock_hand_hour.png, same
+    // size and pivot), and the clock shows a different one a few times a second, picked at
+    // random so it never settles into a loop. Made for the Plasma theme, whose hands are
+    // arcs of lightning. Costs what a moving background costs: the dial is recomposed each
+    // time the hour or minute hand changes. clock_style.json: "handAnim": {"frames":3,"fps":8}.
+    static constexpr int HAND_ANIM_MAX = 5;
+    struct HandAnim {
+        int frames = 0;        // EXTRA versions of each hand; 0 means hands that hold their shape
+        int fps    = 8;        // 1..20, how often the second hand changes; the others at half that
+    } handAnim;
     // THEME_CAPS 43. Which side of the hands the two text banners fall on. False, the way it
     // has always drawn, puts the hands over the words: a watch sweeps its hands across
     // whatever is printed on the dial. True lifts the words on top, which is what a date

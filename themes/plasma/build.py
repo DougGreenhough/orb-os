@@ -16,6 +16,7 @@ What each file is for, and which firmware source decides its shape:
   extras_style.json     the fork's own screens                           (orb_style.cpp)
   clock_plate.png       the dial, 466x466 (still: no extra frames)       (custom_sprite.cpp)
   clock_hand_*.png      hands, pointing up, pivot given in clock_style   (clock_view.cpp)
+  clock_hand_*_<n>.png  more versions of each hand, shown in turn        (custom_sprite.cpp)
   clock_shadow_*.png    same size and pivot as the hand: here, its glow  (clock_view.cpp)
   clock_overlay.png     glass and the hub, over the hands                (custom_sprite.cpp)
   radar_*.png           plate, rings (over the map), blip, card          (radar_sprite.cpp)
@@ -52,6 +53,8 @@ CHAKRA_SB = FONTS / "ChakraPetch-SemiBold.ttf"
 
 SEED = 20261003            # for sparks; the discharge has seeds of its own below
 FRAMES = 0                 # EXTRA clock frames: none. The dial is still; the hands are the plasma now
+HAND_FRAMES = 4            # EXTRA versions of each bolt (clock_hand_hour_1.png ...): the fork's handAnim
+HAND_FPS = 9
 
 
 def log(*a):
@@ -229,45 +232,59 @@ def build_clock(still, loop, base):
         px, py = HAND_W / 2, HAND_PAD + length
         # A bolt, not a tube: a jagged path from just outside the electrode to the tip, drawn
         # thick at the root and fine at the end, with a few short forks leaving it and a
-        # pink spark where it lands (the engine's filaments end pink too). The shape is
-        # fixed, like any hand: it is the same bolt wherever it points.
-        hrng = np.random.default_rng(SEED + {"hour": 11, "minute": 23, "second": 37}[name])
+        # pink spark where it lands (the engine's filaments end pink too). Each hand is drawn
+        # 1 + HAND_FRAMES times from different seeds, same root and same tip: the clock shows
+        # one after another (handAnim), so the arc writhes while its two ends keep the time.
         sway = {"hour": 9.0, "minute": 12.0, "second": 13.0}[name]
-        pts = bolt(hrng, (px, py - start), (px, py - length), sway, HAND_W / 2 - 16)
-        body, core = Mask(HAND_W, h), Mask(HAND_W, h)
-        n = len(pts) - 1
-        for i in range(n):
-            k = i / n
-            wd = width * (1.0 - 0.55 * k)                      # tapers to the tip
-            body.line(*pts[i], *pts[i + 1], wd)
-            core.line(*pts[i], *pts[i + 1], max(0.7, wd * 0.34))
-        # forks: short, thin, leaning outwards and forwards
-        forks = Mask(HAND_W, h)
-        for f in range({"hour": 2, "minute": 3, "second": 3}[name]):
-            i = int(n * (0.25 + 0.6 * (f + hrng.random() * 0.6) / 3.2))
-            x0, y0 = pts[min(i, n - 1)]
-            side = 1 if (f + (name == "minute")) % 2 else -1
-            ang = np.radians(side * hrng.uniform(24, 46))
-            ln = hrng.uniform(13, 26) * (0.8 if name == "hour" else 1.0)
-            fx, fy = x0 + np.sin(ang) * ln, y0 - np.cos(ang) * ln
-            fx = float(np.clip(fx, 14, HAND_W - 14))
-            mid = ((x0 + fx) / 2 + hrng.uniform(-3, 3), (y0 + fy) / 2 + hrng.uniform(-2, 2))
-            forks.line(x0, y0, *mid, max(0.9, width * 0.30))
-            forks.line(*mid, fx, fy, max(0.7, width * 0.22))
-        m = np.maximum(body.arr(), forks.arr() * 0.8)
-        tip = Mask(HAND_W, h).dot(px, py - length, max(2.2, width * 0.55)).arr()
-        light = neon(m, color, lw=width, core=0.95, hot=0.45, bloom=BLOOM_TIGHT)
-        light += core.arr()[..., None] * np.array([0.95, 0.95, 0.95], np.float32)
-        light += neon(tip, PINK, lw=5.0, hot=0.85, bloom=((1.5, 0.6), (4.0, 0.38)))
-        halo = (blur(m, 5.0) * 0.34 * (5.0 * 2.5066 / max(width, 3.0)) + blur(m, 10.0) * 0.14 * (10.0 * 2.5066 / max(width, 3.0)))[..., None] * rgb(color)
-        halo += (blur(tip, 6.0) * 2.4)[..., None] * rgb(PINK) * 0.22
         # keep the glow off the sprite's own edges, so no box shows when it turns
         xs = np.arange(HAND_W, dtype=np.float32) + 0.5
         edge = np.clip(np.minimum(xs, HAND_W - xs) / 9.0, 0, 1)[None, :, None]
         ys = np.arange(h, dtype=np.float32) + 0.5
         edge = edge * np.clip(np.minimum(ys, h - ys) / 9.0, 0, 1)[:, None, None]
-        # the firmware skips hand pixels under alpha 8; fade to that instead of stopping at it
-        save_sprite(OUT / f"clock_hand_{name}.png", light * edge, min_alpha=0.034)
+        tip = Mask(HAND_W, h).dot(px, py - length, max(2.2, width * 0.55)).arr()
+        for frame in range(HAND_FRAMES + 1):
+            hrng = np.random.default_rng(SEED + {"hour": 11, "minute": 23, "second": 37}[name] + 1000 * frame)
+            pts = bolt(hrng, (px, py - start), (px, py - length), sway, HAND_W / 2 - 16)
+            body, core = Mask(HAND_W, h), Mask(HAND_W, h)
+            n = len(pts) - 1
+            for i in range(n):
+                k = i / n
+                wd = width * (1.0 - 0.55 * k)                      # tapers to the tip
+                body.line(*pts[i], *pts[i + 1], wd)
+                core.line(*pts[i], *pts[i + 1], max(0.7, wd * 0.34))
+            # forks: short, thin, leaning outwards and forwards
+            forks = Mask(HAND_W, h)
+            for f in range({"hour": 2, "minute": 3, "second": 3}[name]):
+                i = int(n * (0.25 + 0.6 * (f + hrng.random() * 0.6) / 3.2))
+                x0, y0 = pts[min(i, n - 1)]
+                side = 1 if (f + frame + (name == "minute")) % 2 else -1
+                ang = np.radians(side * hrng.uniform(24, 46))
+                ln = hrng.uniform(13, 26) * (0.8 if name == "hour" else 1.0)
+                fx, fy = x0 + np.sin(ang) * ln, y0 - np.cos(ang) * ln
+                fx = float(np.clip(fx, 14, HAND_W - 14))
+                mid = ((x0 + fx) / 2 + hrng.uniform(-3, 3), (y0 + fy) / 2 + hrng.uniform(-2, 2))
+                forks.line(x0, y0, *mid, max(0.9, width * 0.30))
+                forks.line(*mid, fx, fy, max(0.7, width * 0.22))
+            m = np.maximum(body.arr(), forks.arr() * 0.8)
+            light = neon(m, color, lw=width, core=0.95, hot=0.45, bloom=BLOOM_TIGHT)
+            light += core.arr()[..., None] * np.array([0.95, 0.95, 0.95], np.float32)
+            light += neon(tip, PINK, lw=5.0, hot=0.85, bloom=((1.5, 0.6), (4.0, 0.38)))
+            # the firmware skips hand pixels under alpha 8; fade to that instead of stopping at it
+            save_sprite(OUT / (f"clock_hand_{name}.png" if frame == 0 else f"clock_hand_{name}_{frame}.png"),
+                        light * edge, min_alpha=0.034)
+        # The wide glow ("shadow" sprite) is one image for all the versions, so it follows the
+        # straight line between the two ends: the air the arc is burning through, which does
+        # not jump about when the arc does.
+        spine = Mask(HAND_W, h)
+        for i in range(12):
+            k0, k1 = i / 12, (i + 1) / 12
+            spine.line(px, py - start - (length - start) * k0, px, py - start - (length - start) * k1,
+                       width * (1.0 - 0.55 * k0) * 1.6)
+        m = spine.arr()
+        # wide and faint: at the old strength a straight glow beside a crooked bolt read as
+        # a ghost of the hand
+        halo = (blur(m, 9.0) * 0.15 * (9.0 * 2.5066 / max(width * 1.6, 3.0)) + blur(m, 15.0) * 0.09 * (15.0 * 2.5066 / max(width * 1.6, 3.0)))[..., None] * rgb(color)
+        halo += (blur(tip, 6.0) * 2.4)[..., None] * rgb(PINK) * 0.22
         save_sprite(OUT / f"clock_shadow_{name}.png", halo * edge, min_alpha=0.034)
         pivots[name] = (int(px), int(py))
 
@@ -528,7 +545,8 @@ def build_styles(pivots):
     hand = lambda n: {"show": True, "pivotX": pivots[n][0], "pivotY": pivots[n][1],
                       "centerX": 233, "centerY": 233, "blend": 2}   # screen: light adds to light
     write_json("clock_style.json", {
-        "bg": 0, "plateFollow": 0, "textOverHands": False, "secondSweep": False, "secondRailway": False,
+        "bg": 0, "plateFollow": 0, "textOverHands": False, "secondSweep": True, "secondRailway": False,
+        "handAnim": {"frames": HAND_FRAMES, "fps": HAND_FPS},
         "text1": text_slot(y=DATE_Y, color=0xF0E2FF, glow=3, glowColor=0x9A3DFF, fmt="%a %d %b", upper=True),
         "text2": {"show": False},
         "windOn": False,

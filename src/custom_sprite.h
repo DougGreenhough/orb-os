@@ -21,6 +21,10 @@ CustomSprite    custom_hand(int kind);  // kind 0=hour,1=minute,2=second,3=stati
 // ships none. Same pivot and size as its hand, so it rotates identically; the offset that
 // makes the light look fixed is applied to the centre by the caller.
 CustomSprite    custom_shadow(int hand);  // hand 0=hour, 1=minute, 2=second
+// This fork: version `frame` of a hand (0 = the hand itself, 1.. = clock_hand_<name>_<frame>.png).
+// Falls back to the hand itself when that version is not in the theme. Theme-only: there is
+// no compiled-in version of these.
+CustomSprite    custom_hand_frame(int hand, int frame);
 // The wind screen's two, THEME_CAPS 44. Both carry alpha, so both come back in the same
 // 3-bytes-per-pixel shape a hand does, which is also what LVGL rotates natively.
 const uint16_t *wind_background(int &w, int &h);   // wind_bg.png, OPAQUE RGB565: the wind screen covers the clock

@@ -1109,6 +1109,22 @@ static void blit_plate_rot_slow(const uint16_t *src, float angleDeg) {
 // cost for a second or two, which is the moment somebody is looking at the picture rather
 // than the hand. A theme may also ask to loop, and then it pays the whole time, which is its
 // choice to make and is why it is not the default.
+// This fork: hands that change shape (theme_style.h, HandAnim). Which version of each of the
+// three moving hands is on the dial now. The second hand changes every step and costs
+// nothing extra, because a sweep frame wipes and redraws its whole sprite anyway. The hour
+// and minute hands are in the cache beneath it, so changing them is a full compose, the same
+// price as a background frame; they change together, every third step.
+static uint8_t  s_handFrame[3] = { 0, 0, 0 };
+static uint32_t s_handStep = 0;
+static constexpr uint32_t HAND_ANIM_SLOW_EVERY = 3;
+static CustomSprite hand_sprite(int k) {
+    return (k >= 0 && k <= 2 && s_handFrame[k]) ? custom_hand_frame(k, s_handFrame[k]) : custom_hand(k);
+}
+static uint8_t hand_other_frame(uint8_t now, int frames) {
+    uint8_t f = (uint8_t)lv_rand(0, (uint32_t)frames - 1);   // one of the others, never the same twice
+    return f >= now ? f + 1 : f;
+}
+
 static uint32_t s_bgPlayStart = 0;     // ms, when the current play began; 0 when holding
 static uint32_t s_bgLastPlay  = 0;     // ms, when the last play ended
 static int      s_bgFrame     = 0;     // the frame now on screen, so a change can be noticed
@@ -1285,7 +1301,7 @@ static void compose_custom(const struct tm *ti, bool skipSecond, bool withOverla
         if (skipSecond && k == 2) { sawSecond = true; continue; }
         const theme_style::Hand &hd = cs.hand[k];
         if (!hd.show) continue;
-        CustomSprite spr = custom_hand(k);
+        CustomSprite spr = hand_sprite(k);
         if (spr.data) blend_custom_hand(spr.data, spr.w, spr.h, hd.pivotX, hd.pivotY,
                                         (float)hd.centerX, (float)hd.centerY, ang[k], hd.blend);
     }
@@ -1324,7 +1340,15 @@ static void draw_custom(const struct tm *ti) { compose_custom(ti, false, true); 
 static lv_timer_t *s_tick = nullptr;
 // A rolling average of what one sweep frame costs, in milliseconds, measured end to end
 // including everything LVGL then does with it.
-static float s_sweepMs = 45.0f;
+// This fork: off the device (simulator, browser demo) nothing measures the cost, so the
+// starting figure is the figure. A desktop composes a frame in well under a millisecond;
+// start at the 30-a-second ceiling there rather than at the device's guess.
+#if defined(ESP_PLATFORM)
+static constexpr float SWEEP_MS_START = 45.0f;
+#else
+static constexpr float SWEEP_MS_START = 16.5f;
+#endif
+static float s_sweepMs = SWEEP_MS_START;
 static uint32_t s_tickPeriod = 0;
 
 // 30 a second is the ceiling: the hand turns six degrees a second, so a step is a fifth of a
@@ -1383,7 +1407,7 @@ static bool sweep_possible() {
 // The box the second hand can reach at this angle, padded by a pixel for the bilinear tap.
 static lv_area_t second_box(float angDeg) {
     const theme_style::Hand &hd = theme_style::clock().hand[2];
-    CustomSprite spr = custom_hand(2);
+    CustomSprite spr = hand_sprite(2);
     const int sw = spr.data ? spr.w : 0, sh = spr.data ? spr.h : 0;
     const float px = (float)hd.pivotX, py = (float)hd.pivotY;
     const float th = angDeg * DEG2RAD, ct = cosf(th), st = sinf(th);
@@ -1483,7 +1507,7 @@ static void sweep_frame(float secs) {
     // The bounding rectangle of a thin diagonal is three or four times its own area, so
     // restoring and re-glassing the whole box was 18 ms of a 52 ms frame to repair pixels
     // nothing had drawn on.
-    CustomSprite spr0 = custom_hand(2);
+    CustomSprite spr0 = hand_sprite(2);
     const int sw = spr0.data ? spr0.w : 0, sh = spr0.data ? spr0.h : 0;
     const bool shadow = cs.shadowOn && custom_shadow(2).data;
     // STATIC, not on the stack. Two arrays of 466 ints is 3.7 KB, and this runs on the LVGL
@@ -1522,7 +1546,7 @@ static void sweep_frame(float secs) {
     s_prevAng = ang;
     // From here on, every layer is confined to exactly what was wiped.
     s_runLo = runLo; s_runHi = runHi;
-    CustomSprite spr = custom_hand(2);
+    CustomSprite spr = hand_sprite(2);
     if (cs.shadowOn) {
         CustomSprite sh = custom_shadow(2);
         if (sh.data) blend_shadow(sh.data, sh.w, sh.h, hd.pivotX, hd.pivotY,
@@ -1560,7 +1584,7 @@ static void sweep_frame(float secs) {
                                                (float)(oh.centerX + cs.shadowDX),
                                                (float)(oh.centerY + cs.shadowDY), above[k]);
                 }
-                CustomSprite ospr = custom_hand(k);
+                CustomSprite ospr = hand_sprite(k);
                 if (ospr.data) blend_custom_hand(ospr.data, ospr.w, ospr.h, oh.pivotX, oh.pivotY,
                                                  (float)oh.centerX, (float)oh.centerY,
                                                  above[k], oh.blend);
@@ -1719,8 +1743,36 @@ static void tick_cb(lv_timer_t * /*t*/) {
             const bool running = a2.frames > 0 && (a2.loop || bg_anim_playing());
             const uint32_t base = sweep_possible() ? sweep_period() : 1000;
             const uint32_t need = (uint32_t)(1000 / (a2.fps < 1 ? 1 : a2.fps));
-            const uint32_t want2 = running ? (need < base ? need : base) : base;
+            uint32_t want2 = running ? (need < base ? need : base) : base;
+            // This fork: hands that change shape want a frame each time they do. A sweeping
+            // hand already asks at least that often; a ticking one asks once a second.
+            const theme_style::Clock::HandAnim &ha2 = theme_style::clock().handAnim;
+            if (ha2.frames > 0 && s_face == FACE_CUSTOM) {
+                const uint32_t hp = 1000u / (uint32_t)ha2.fps;
+                if (hp < want2) want2 = hp;
+            }
             if (want2 != s_tickPeriod) { s_tickPeriod = want2; lv_timer_set_period(s_tick, want2); }
+        }
+    }
+
+    // This fork: hands that change shape. See s_handFrame.
+    {
+        const theme_style::Clock::HandAnim &ha = theme_style::clock().handAnim;
+        if (ha.frames > 0 && s_face == FACE_CUSTOM) {
+            const uint32_t period = 1000u / (uint32_t)ha.fps;
+            const uint32_t step = lv_tick_get() / period;
+            if (step != s_handStep) {
+                s_handStep = step;
+                s_handFrame[2] = hand_other_frame(s_handFrame[2], ha.frames);
+                if (step % HAND_ANIM_SLOW_EVERY == 0) {
+                    s_handFrame[0] = hand_other_frame(s_handFrame[0], ha.frames);
+                    s_handFrame[1] = hand_other_frame(s_handFrame[1], ha.frames);
+                    s_underMin = -1;
+                    s_fullNext = true;
+                }
+            }
+        } else if (s_handFrame[0] | s_handFrame[1] | s_handFrame[2]) {
+            s_handFrame[0] = s_handFrame[1] = s_handFrame[2] = 0;
         }
     }
 
@@ -1776,7 +1828,7 @@ static void apply_face() {
     // ...and what the last face COST. Nothing about how often this screen redraws is stored
     // with a design or carried between them: it is measured, here, from whatever is on the
     // glass now. A heavy dial must not leave a light one running at its pace.
-    s_sweepMs = 45.0f; s_tickPeriod = 0;
+    s_sweepMs = SWEEP_MS_START; s_tickPeriod = 0;
     retime();
     // Hand sprites belong to the aviator face only; draw_aviator() re-shows them.
     if (s_face != FACE_AVIATOR) {

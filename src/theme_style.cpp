@@ -78,6 +78,7 @@ void seed_defaults() {
     s_clock.bg = (uint32_t)CUSTOM_CLOCK.bg;
     s_clock.plateFollow = 0;      // static plate unless the theme says otherwise
     s_clock.bgAnim = theme_style::Clock::BgAnim{};   // a still plate unless the theme ships frames
+    s_clock.handAnim = theme_style::Clock::HandAnim{};
 #if CUSTOM_HAS_TEXT1
     s_clock.text1.show = true;
     s_clock.text1.x = CUSTOM_TEXT1_X;
@@ -525,6 +526,17 @@ void load() {
             // frame count decides how many files are looked for and how much PSRAM the SD
             // path would hold, and a bad number in a shared theme file must not be able to
             // ask for either without limit.
+            if (doc["handAnim"].is<JsonObjectConst>()) {
+                JsonObjectConst ha = doc["handAnim"].as<JsonObjectConst>();
+                if (ha["frames"].is<int>()) {
+                    const int n = ha["frames"].as<int>();
+                    s_clock.handAnim.frames = n < 0 ? 0 : (n > theme_style::Clock::HAND_ANIM_MAX ? theme_style::Clock::HAND_ANIM_MAX : n);
+                }
+                if (ha["fps"].is<int>()) {
+                    const int v = ha["fps"].as<int>();
+                    s_clock.handAnim.fps = v < 1 ? 1 : (v > 20 ? 20 : v);
+                }
+            }
             if (doc["bgAnim"].is<JsonObjectConst>()) {
                 JsonObjectConst ba = doc["bgAnim"].as<JsonObjectConst>();
                 if (ba["frames"].is<int>()) {
