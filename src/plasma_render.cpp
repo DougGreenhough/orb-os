@@ -28,10 +28,15 @@ namespace {
 constexpr float D = 3.0f;
 constexpr float LIMB = 2.8284271f;           // sqrt(D*D - 1)
 constexpr float C = 116.5f;                  // centre of the render grid
-constexpr float RL = 115.5f;                 // the glass's silhouette, render px
-constexpr float K = RL * LIMB;
-constexpr float RD = 116.5f;                 // the panel's own edge, render px
-constexpr float WF = 0.42f;                  // one web line-width unit, in render px
+constexpr float RL0 = 115.5f;                // the glass's silhouette when it fills the panel
+constexpr float WF0 = 0.42f;                 // one web line-width unit, in render px, at that size
+// Set by render_alloc() from the palette (one ball at a time). With the page's own palette
+// these are the numbers they always were; a themed ball is smaller, inside a rim.
+float RL = RL0;                              // the glass's silhouette, render px
+float K = RL0 * LIMB;
+float RD = 116.5f;                           // where drawing stops: the panel's edge, or the rim's
+float WF = WF0;
+const Palette *PAL = nullptr;                // the palette in use, for shade()
 constexpr float IREF = 0.09f;
 
 // ---- how it reads as light ---------------------------------------------------------
@@ -41,7 +46,7 @@ constexpr float IREF = 0.09f;
 // light also goes to the bloom grid (BLOOM), and the gas, glass and electrode, which are
 // broad and smooth, are simply drawn as bright as the bloom would have made them (BROAD).
 constexpr float GAIN = 1.35f;
-constexpr float BLOOM = 0.7f;
+float BLOOM = 0.7f;                          // scaled by a themed palette's `bloom`
 constexpr float BROAD = 1.9f;
 // The 12.5-unit glow round every channel: drawn as a stroke (true), or handed to the bloom
 // grid (false), which roughly halves the pixels the rasteriser touches. The first knob to
@@ -73,10 +78,21 @@ float warmth(float u) {
     t = t < 0 ? 0 : t > 1 ? 1 : t;
     return t * t * (3 - 2 * t);
 }
+// The page's own palette turns the hue along a channel. A theme's two colours can be
+// anywhere on the wheel (brass and verdigris are 140 degrees apart, with green between), so
+// those are mixed as colours instead: `base` then carries only the strand's own offset.
 RGB shade(float base, float u, float sat, float li) {
     const float t = warmth(u);
-    return hsl(base + BODY_SHIFT + (END_SHIFT - BODY_SHIFT) * t, sat * (0.72f + 0.26f * t), li);
+    if (!PAL || PAL->native)
+        return hsl(base + BODY_SHIFT + (END_SHIFT - BODY_SHIFT) * t, sat * (0.72f + 0.26f * t), li);
+    const RGB a = hsl(base + PAL->bodyHue, sat * 0.72f * PAL->bodySat, li);
+    if (t <= 0) return a;
+    const RGB b = hsl(base + PAL->endHue, sat * 0.98f * PAL->endSat, li);
+    return { a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t };
 }
+// A hue that is not a channel's: the gas, the glass, the electrode, the readout's track.
+inline float end_hue(const Render &R) { return PAL && !PAL->native ? PAL->endHue : R.hue + END_SHIFT * 0.8f; }
+inline float strand(const Render &R, float h) { return PAL && !PAL->native ? PAL->spread * h : R.hue + SPREAD * h; }
 
 inline void proj(float x, float y, float z, float &sx, float &sy) {
     const float q = K / (D - z);
@@ -296,7 +312,7 @@ void channel_points(const Engine &e, const Fil &f, float *sx, float *sy) {
 void channel(Render &R, const Engine &e, const Fil &f) {
     float sx[NN], sy[NN];
     channel_points(e, f, sx, sy);
-    const float base = R.hue + SPREAD * f.hue;
+    const float base = strand(R, f.hue);
     const float dz = 0.42f + 0.58f * (f.d[(NN - 1) * 3 + 2] + 1) * 0.5f;
     const int start = f.par >= 0 ? f.k : 0;
     int a = start;
@@ -368,7 +384,7 @@ void brush(Render &R, const Engine &e, int fi) {
     const float dz = 0.42f + 0.58f * (f.d[F + 2] + 1) * 0.5f;
     const float al = f.life * dz * fminf(2.0f, powf(c, 0.6f));
     if (al < 0.01f) return;
-    const float base = R.hue + SPREAD * f.hue;
+    const float base = strand(R, f.hue);
     const float fx = f.d[F], fy = f.d[F + 1], fz = f.d[F + 2];
     const float wf = WF * dz;
 
@@ -511,7 +527,7 @@ void roots(Render &R, const Engine &e) {
         if (D * f.d[2] - r0 < -0.15f) continue;
         float x, y;
         proj(f.d[0] * r0, f.d[1] * r0, f.d[2] * r0, x, y);
-        const float base = R.hue + SPREAD * f.hue;
+        const float base = strand(R, f.hue);
         const float rad = (4 + 5 * fminf(2.0f, sqrtf(c))) * WF;
         const float pos[3] = { 0, 0.4f, 1 };
         const RGB col[3] = { shade(base, 0, 60, 94), shade(base, 0, 100, 72), shade(base, 0, 100, 60) };
@@ -550,10 +566,12 @@ void electrode(Render &R) {
 void ring(Render &R) {
     if (R.ring < 0 || R.ringA <= 0) return;
     const float k = R.ringA;
-    const float rr = RL - 3.5f;
+    const bool nat = !PAL || PAL->native;
+    const float rr = RL - (nat ? 3.5f : 5.0f);
     const float a0 = 135.0f * 3.14159265f / 180.0f, span = 90.0f * 3.14159265f / 180.0f;
-    const RGB on = shade(R.hue, 1, 100, 72), off = hsl(R.hue, 20, 70);
-    const Pass pOn[2] = { { 3.0f, 0.35f * k, on }, { 1.3f, 0.9f * k, shade(R.hue, 1, 90, 88) } };
+    const float rb = nat ? R.hue : 0.0f;
+    const RGB on = shade(rb, 1, 100, 72), off = nat ? hsl(R.hue, 20, 70) : hsl(PAL->endHue, 20 * PAL->endSat, 70);
+    const Pass pOn[2] = { { 3.0f, 0.35f * k, on }, { 1.3f, 0.9f * k, shade(rb, 1, 90, 88) } };
     const Pass pOff = { 1.2f, 0.22f * k, off };
     Lut LOn, LOff;
     build_lut(LOn, pOn, 2);
@@ -601,6 +619,7 @@ void blur_glow(Render &R) {
 // clamped, dithered to RGB565; the accumulator is cleared behind it.
 void finish(Render &R) {
     static int16_t vrow[LG * 3];
+    const int baseK = R.baseK;
     // Bloom cell coordinates for each render column: (x + 0.5) / 4 - 0.5, in eighths.
     for (int y = 0; y < RW; ++y) {
         const int xl = R.chordL[y], xr = R.chordR[y];
@@ -627,7 +646,7 @@ void finish(Render &R) {
         const uint8_t *bay = &BAYER16[(y & 3) * 4];
         for (int x = xl; x <= xr; ++x, p += 3, ++o) {
             const int dx = x - 116;
-            const int idx = ((dx * dx + dy2) * 4945) >> 16;          // r^2 / RD^2 * 1024
+            const int idx = ((dx * dx + dy2) * baseK) >> 16;         // r^2 / RD^2 * 1024
             const uint8_t *bs = &R.base[(idx > 1024 ? 1024 : idx) * 3];
             const int xs = 2 * x - 3;
             int ix0 = xs >> 3; const int fx = xs & 7;
@@ -656,9 +675,23 @@ void finish(Render &R) {
 
 } // namespace
 
-bool render_alloc(Render &R, float hue, float r0) {
+bool render_alloc(Render &R, const Palette &pal, float r0) {
     memset(&R, 0, sizeof(R));
-    R.hue = hue;
+    R.pal = pal;
+    PAL = &R.pal;
+    const bool nat = pal.native;
+    const float hue = nat ? pal.hue : pal.bodyHue;   // the gas and the glass
+    const float gs = nat ? 1.0f : pal.bodySat;
+    const float gk = nat ? 1.0f : pal.gas;
+    R.hue = pal.hue;
+    // The page's ball fills the panel. A themed one is `ball` render px to the outside of
+    // its rim, and the glass, the electrode and every line width shrink with it.
+    RL = nat ? RL0 : pal.ball - pal.rimW;
+    K = RL * LIMB;
+    WF = WF0 * RL / RL0;
+    RD = nat ? 116.5f : pal.ball + 1.0f;
+    BLOOM = 0.7f * (nat ? 1.0f : pal.bloom);
+    R.baseK = nat ? 4945 : (int)(1024.0f * 65536.0f / (RD * RD));   // r^2 / RD^2 * 1024, 16.16
     R.rng = 0x2545F491u;
     R.ring = -1;
     R.ringA = 1;
@@ -701,12 +734,27 @@ bool render_alloc(Render &R, float hue, float r0) {
 
     // The gas and the glass, by radius: a dark haze of the plasma's own colour, the
     // plasma piling up against the inside of the shell, and a fine bright rim.
-    const RGB g0 = hsl(hue, 70, 7), g1 = hsl(hue - 12, 60, 4);
-    const RGB s1 = hsl(hue, 100, 58), s2 = hsl(hue, 100, 74), rim = hsl(hue, 60, 90);
+    const RGB g0 = hsl(hue, 70 * gs, 7), g1 = hsl(hue - (nat ? 12 : 0), 60 * gs, 4);
+    const RGB s1 = hsl(hue, 100 * gs, 58), s2 = hsl(hue, 100 * gs, 74), rim = hsl(hue, 60 * gs, 90);
+    // A themed ball's rim: a band of the theme's metal (or a drawn line, when it is thin),
+    // darker at both edges with a highlight a third of the way in. Past it nothing is
+    // drawn at all; the table holds the rim's edge colour there so that the view's
+    // doubling has something sensible to average with at the silhouette.
+    auto rim_at = [&](float r, float &cr, float &cg, float &cb) {
+        float t = pal.rimW > 0 ? (r - RL) / pal.rimW : 1.0f;
+        t = clampf(t, 0, 1);
+        float f = 1.0f;
+        if (pal.rimW >= 2.5f) {
+            const float bell = powf(4 * t * (1 - t), 0.7f), hl = (t - 0.34f) / 0.13f;
+            f = 0.30f + 0.62f * bell + 0.45f * expf(-hl * hl);
+        }
+        cr = pal.rim[0] * f; cg = pal.rim[1] * f; cb = pal.rim[2] * f;
+    };
     for (int i = 0; i <= 1024; ++i) {
         const float r = sqrtf(i / 1024.0f) * RD;
         float cr, cg, cb;
-        if (r > RL + 0.5f) { cr = 5 / 255.f; cg = 4 / 255.f; cb = 10 / 255.f; }
+        if (!nat && r > RL + 0.5f) rim_at(r, cr, cg, cb);
+        else if (r > RL + 0.5f) { cr = 5 / 255.f; cg = 4 / 255.f; cb = 10 / 255.f; }
         else {
             const float t = clampf(r / RL, 0, 1);
             cr = g0.r + (g1.r - g0.r) * t; cg = g0.g + (g1.g - g0.g) * t; cb = g0.b + (g1.b - g0.b) * t;
@@ -722,10 +770,12 @@ bool render_alloc(Render &R, float hue, float r0) {
                 ab = s1.b * 0.06f + (s2.b * 0.2f - s1.b * 0.06f) * f;
             }
             const float rc = clampf(1.0f - fabsf(r - (RL - 0.5f)), 0, 1) * 0.16f;
-            cr += ar + rim.r * rc; cg += ag + rim.g * rc; cb += ab + rim.b * rc;
-            if (r > RL - 0.5f) {       // antialias the silhouette into the room
+            cr = (cr + ar) * gk + rim.r * rc; cg = (cg + ag) * gk + rim.g * rc; cb = (cb + ab) * gk + rim.b * rc;
+            if (r > RL - 0.5f) {       // antialias the silhouette into the room (or the rim)
                 const float k = clampf(RL + 0.5f - r, 0, 1);
-                cr = cr * k + (1 - k) * 5 / 255.f; cg = cg * k + (1 - k) * 4 / 255.f; cb = cb * k + (1 - k) * 10 / 255.f;
+                float or_ = 5 / 255.f, og = 4 / 255.f, ob = 10 / 255.f;
+                if (!nat) { rim_at(r, or_, og, ob); or_ /= BROAD; og /= BROAD; ob /= BROAD; }
+                cr = cr * k + (1 - k) * or_; cg = cg * k + (1 - k) * og; cb = cb * k + (1 - k) * ob;
             }
         }
         const float bk = r > RL + 0.5f ? 1.0f : BROAD;
@@ -748,9 +798,9 @@ bool render_alloc(Render &R, float hue, float r0) {
 
     // electrode sprite: the page's two-circle gradient for the ball, the ring and the rim
     {
-        const float he = hue + END_SHIFT * 0.8f;
-        const RGB e0 = hsl(he, 70, 46), e1 = hsl(he, 60, 24), e2 = hsl(he, 75, 34);
-        const RGB q0 = hsl(he, 100, 80), q1 = hsl(he, 100, 68), q2 = hsl(he, 100, 56), rm = hsl(he, 100, 78);
+        const float he = end_hue(R), es = nat ? 1.0f : pal.endSat;
+        const RGB e0 = hsl(he, 70 * es, 46), e1 = hsl(he, 60 * es, 24), e2 = hsl(he, 75 * es, 34);
+        const RGB q0 = hsl(he, 100 * es, 80), q1 = hsl(he, 100 * es, 68), q2 = hsl(he, 100 * es, 56), rm = hsl(he, 100 * es, 78);
         const float p0x = -0.3f * re, p0y = -0.35f * re, rho0 = 0.05f * re, dR = re - rho0;
         const float pp = p0x * p0x + p0y * p0y;
         const int S = R.elecS;

@@ -15,12 +15,23 @@ What comes out (all const, so it stays in flash):
 
     globe_tex[256][512]    RGB565, equirectangular, row 0 = 90N, column 0 = 180W
     globe_ocean[256][64]   1 bit per texel, bit (u & 7) of byte u >> 3: 1 = water
+    globe_coast[256][512]  8 bits per texel: how far the nearest coast is, signed
+
+The coast map is for the Globe's drawn styles (a theme's phosphor outline, an engraved
+atlas, a neon globe), which need a coastline rather than a photograph. It is a signed
+distance field: 128 is the shore, above it is land, below it water, COAST_SCALE steps to a
+texel-height (0.703 degrees) of true distance on the sphere (east-west distances are
+shortened by cos(latitude), so a line drawn at a fixed distance is as thick in Greenland
+as on the equator), clamped at about 7.5 degrees either way. Sampled bilinearly it gives
+a smooth shoreline at any zoom, and one table lookup on it gives the line, a glow that
+falls away from it, the water-lining of an old chart and the land's fill. It is measured
+on the 1024-wide water mask, twice the output's resolution. 128 KB.
 
 Why 512x256: the screen renders the globe at half resolution, 96 px radius, so the
 centre of the disc shows ~1.36 render px per degree of longitude. 512 columns is 1.42
 per degree: one texel per rendered pixel where the globe is sharpest, and more than
 enough towards the limb, where everything is foreshortened. 1024x512 would cost 1 MB
-for detail the 233 px frame cannot show. 256 KB + 16 KB here.
+for detail the 233 px frame cannot show. 256 KB + 16 KB here, and 128 KB of coast map.
 
 The texture is pre-treated so that the device can shade it with a single multiply and
 still look like the homepage. The homepage (three.js r165) loads the map without a
@@ -31,11 +42,13 @@ the device multiplies by a per-pixel shade that already holds srgb(k).
 
 Usage:
     python3 tools/bake_globe_texture.py [texture dir]   (default ~/Claude/homepage/assets/textures)
-Needs Pillow.
+Needs Pillow and numpy (the coast map takes about half a minute).
 """
+import math
 import os
 import sys
 
+import numpy as np
 from PIL import Image
 
 W, H = 512, 256
@@ -45,6 +58,63 @@ OUT_H = os.path.join(HERE, '..', 'src', 'globe_texture.h')
 OUT_C = os.path.join(HERE, '..', 'src', 'globe_texture.c')
 
 BAYER4 = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]]
+
+COAST_SCALE = 12              # steps per texel-height of distance; 128 = the shore
+COAST_SS = 2                  # measured on a mask this many times the output's resolution
+
+
+def coast_field(spec_full):
+    """Signed distance to the shore for every output texel: + on land, - on water."""
+    w, h = W * COAST_SS, H * COAST_SS
+    water = np.asarray(spec_full.resize((w, h), Image.BOX)) >= 128
+    reach = 127.0 / COAST_SCALE * COAST_SS + 1          # as far as a byte can say, in mask px
+    lat = (0.5 - (np.arange(h) + 0.5) / h) * math.pi
+    cosl = np.maximum(np.cos(lat), 0.12)                 # past 83 degrees a row is nearly a point
+
+    # The mask has every river and pond in it, and each would be a ring of coastline. Keep
+    # only water with some body to it: wear the water back by a pixel all round (a degree
+    # across survives), then let what is left grow back, inside the original mask, a few
+    # steps. Seas, straits and the big lakes come back whole; rivers and specks do not.
+    kx = np.minimum(np.rint(1.0 / cosl).astype(int), 12)
+
+    def spread(m, grow):
+        out = m.copy()
+        up = np.vstack([m[:1], m[:-1]])
+        down = np.vstack([m[1:], m[-1:]])
+        for dx in range(-int(kx.max()), int(kx.max()) + 1):
+            ok = (kx >= abs(dx))[:, None]
+            for layer in (m, up, down):
+                sh = np.roll(layer, dx, axis=1)
+                out = (out | (sh & ok)) if grow else (out & (sh | ~ok))
+        return out
+
+    body = spread(water, False)
+    for _ in range(4):
+        body = spread(body, True) & water
+    water = body
+    best = np.full((h, w), reach, dtype=np.float32)
+    ry = int(math.ceil(reach))
+    rows = np.arange(h)
+    for dy in range(-ry, ry + 1):
+        src = np.clip(rows + dy, 0, h - 1)
+        there = water[src]                               # the row dy away (clamped at the poles)
+        rem = reach * reach - dy * dy
+        if rem <= 0:
+            continue
+        # how far east or west is still within reach, per row
+        maxdx = np.minimum(np.floor(math.sqrt(rem) / cosl).astype(int), w // 2)
+        for dx in range(0, int(maxdx.max()) + 1):
+            ok = maxdx >= dx
+            d = np.sqrt((dx * cosl) ** 2 + dy * dy).astype(np.float32)
+            for sgn in ((1, -1) if dx else (1,)):
+                other = np.roll(there, -sgn * dx, axis=1) != water
+                cand = np.where(other & ok[:, None], d[:, None], reach)
+                np.minimum(best, cand, out=best)
+    # to the nearest pixel of the other kind is half a pixel past the shore itself
+    dist = np.maximum(best - 0.5, 0) / COAST_SS
+    signed = np.where(water, -dist, dist)
+    out = signed.reshape(H, COAST_SS, W, COAST_SS).mean(axis=(1, 3))
+    return np.clip(np.rint(128 + out * COAST_SCALE), 0, 255).astype(np.uint8)
 
 
 def srgb(x):
@@ -57,6 +127,8 @@ def main():
     atmos = Image.open(os.path.join(src, 'earth_atmos_2048.jpg')).convert('RGB')
     clouds = Image.open(os.path.join(src, 'earth_clouds_1024.png')).convert('RGBA')
     spec = Image.open(os.path.join(src, 'earth_specular_2048.jpg')).convert('L')
+
+    coast = coast_field(spec)
 
     atmos = atmos.resize((W, H), Image.LANCZOS)
     clouds = clouds.resize((W, H), Image.LANCZOS)
@@ -96,6 +168,10 @@ def main():
         f.write('#ifdef __cplusplus\nextern "C" {\n#endif\n')
         f.write('extern const uint16_t globe_tex[GLOBE_TEX_W * GLOBE_TEX_H];     // RGB565, row 0 = 90N, col 0 = 180W\n')
         f.write('extern const uint8_t  globe_ocean[GLOBE_TEX_W * GLOBE_TEX_H / 8]; // 1 = water; bit (u & 7) of byte (v*W+u) >> 3\n')
+        f.write('// Signed distance to the shore: 128 = the shore, more = land, less = water,\n')
+        f.write('// GLOBE_COAST_SCALE steps per texel-height (180/GLOBE_TEX_H degrees) of true distance.\n')
+        f.write('#define GLOBE_COAST_SCALE %d\n' % COAST_SCALE)
+        f.write('extern const uint8_t  globe_coast[GLOBE_TEX_W * GLOBE_TEX_H];\n')
         f.write('#ifdef __cplusplus\n}\n#endif\n')
 
     with open(OUT_C, 'w') as f:
@@ -111,9 +187,14 @@ def main():
         f.write('const uint8_t globe_ocean[GLOBE_TEX_W * GLOBE_TEX_H / 8] = {\n')
         for i in range(0, len(ocean), 32):
             f.write(','.join('0x%02x' % b for b in ocean[i:i + 32]) + ',\n')
+        f.write('};\n\n')
+        f.write('const uint8_t globe_coast[GLOBE_TEX_W * GLOBE_TEX_H] = {\n')
+        flat = coast.reshape(-1)
+        for i in range(0, len(flat), 32):
+            f.write(','.join('0x%02x' % b for b in flat[i:i + 32]) + ',\n')
         f.write('};\n')
-    print('wrote %s and %s: %d KB texture + %d KB ocean mask' %
-          (OUT_H, OUT_C, len(tex) * 2 // 1024, len(ocean) // 1024))
+    print('wrote %s and %s: %d KB texture + %d KB ocean mask + %d KB coast map' %
+          (OUT_H, OUT_C, len(tex) * 2 // 1024, len(ocean) // 1024, coast.size // 1024))
 
 
 if __name__ == '__main__':
