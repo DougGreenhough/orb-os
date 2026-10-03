@@ -1,0 +1,4 @@
+build/
+__pycache__/
+# the theme's converted typefaces are deliverables, not build artifacts
+!out/plasma/*.bin
